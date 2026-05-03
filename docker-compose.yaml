@@ -1,0 +1,42 @@
+services:
+
+  # ── Worker ────────────────────────────────────────────────────────────────────
+  # One instance only.  Fetches live inverter data every 5 minutes, runs the
+  # strategy optimiser once per day after 16:15, and writes results to the
+  # shared cache directory.  Web instances read from those files; they make
+  # no external API calls themselves.
+  worker:
+    image: YOUR_DOCKERHUB_USERNAME/solariq:latest
+    restart: unless-stopped
+    command: ["python", "-m", "solariq.worker"]
+
+    volumes:
+      - ./config/solariq.ini:/app/solariq.ini:ro
+      - ./cache:/app/cache
+      - ./logs:/app/logs
+
+  # ── Web ───────────────────────────────────────────────────────────────────────
+  # Scale freely: docker compose up --scale web=2
+  # Every instance reads from the shared cache written by the worker.
+  web:
+    image: YOUR_DOCKERHUB_USERNAME/solariq:latest
+    restart: unless-stopped
+    depends_on:
+      - worker
+
+    ports:
+      # Frontend (Next.js)
+      - "3002:3002"
+      # Backend websocket – browsers connect here directly
+      - "8002:8002"
+
+    environment:
+      # Set to the IP or hostname of your Raspberry Pi so the browser
+      # JavaScript can reach the backend websocket from the local network.
+      # Example: http://192.168.1.50:8002
+      - API_URL=http://YOUR_PI_IP:8002
+
+    volumes:
+      - ./config/solariq.ini:/app/solariq.ini:ro
+      - ./cache:/app/cache   # read-only in practice; worker owns writes
+      - ./logs:/app/logs

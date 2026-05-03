@@ -1,0 +1,813 @@
+import asyncio
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+import reflex as rx
+
+from solariq.cache import (
+    DEFAULT_CALIBRATION_PATH,
+    DEFAULT_SOLAR_FORECAST_PATH,
+    DEFAULT_STRATEGY_PATH,
+    DEFAULT_TODAY_PATH,
+    DEFAULT_TODAY_RATES_PATH,
+    load_calibration,
+    load_solar_forecast_today,
+    load_strategy,
+    load_today_snapshot,
+    save_calibration,
+    save_solar_forecast_today,
+    save_strategy,
+)
+from solariq.config import load_config, SolarIQConfig
+from solariq.logging_config import setup_logging
+from solariq.data.influx import get_today_live_data, get_historical_range_data, get_latest_inverter_stats
+from solariq.data.load_profile import build_load_profile
+from solariq.data.octopus import fetch_agile_prices, fetch_export_prices, fetch_standing_charge_p_per_day, fetch_total_standing_charge_gbp
+from solariq.data.solcast import fetch_solar_forecast
+from solariq.data.weather import fetch_today_weather
+from solariq.optimizer.solver import solve
+
+_config: SolarIQConfig | None = None
+
+
+def _get_config() -> SolarIQConfig:
+    global _config
+    if _config is None:
+        _config = load_config()
+        setup_logging(_config.app.log_file, _config.app.log_level)
+    return _config
+
+
+def _tomorrow(config: SolarIQConfig) -> date:
+    tz = ZoneInfo(config.app.timezone)
+    return (datetime.now(tz) + timedelta(days=1)).date()
+
+
+def _after_refresh_time(config: SolarIQConfig) -> bool:
+    """Return True only if the current local time is at or past the configured refresh_time.
+    Octopus Agile prices for tomorrow are not published until ~16:00.
+    There is no point attempting a strategy calculation before that time."""
+    tz = ZoneInfo(config.app.timezone)
+    now = datetime.now(tz)
+    refresh_h, refresh_m = (int(x) for x in config.app.refresh_time.split(":"))
+    refresh_time = now.replace(hour=refresh_h, minute=refresh_m, second=0, microsecond=0)
+    return now >= refresh_time
+
+
+def _should_refresh_strategy(cached_target: str | None, config: SolarIQConfig) -> bool:
+    """Return True if we should fetch+compute a fresh strategy.
+
+    Conditions:
+    - Current time must be at or after configured refresh_time (default 16:15)
+    - Cached strategy must not already be for tomorrow's date
+    """
+    if not _after_refresh_time(config):
+        return False
+    tomorrow_str = _tomorrow(config).isoformat()
+    return cached_target != tomorrow_str
+
+
+class AppState(rx.State):
+    # Navigation
+    current_page: str = "today"
+
+    # Tomorrow strategy
+    strategy_periods: list[dict] = []
+    estimated_cost_gbp: float = 0.0
+    solar_forecast_kwh: float = 0.0
+    grid_import_kwh: float = 0.0
+    strategy_computed_at: str = ""
+    strategy_target_date: str = ""
+    strategy_loading: bool = False
+    strategy_error: str = ""
+
+    # Tomorrow charts
+    tomorrow_price_data: list[dict] = []
+    tomorrow_solar_data: list[dict] = []
+
+    # Today data
+    battery_soc_pct: float = 0.0
+    battery_soc_kwh: float = 0.0
+    solar_today_kwh: float = 0.0
+    grid_import_today_kwh: float = 0.0
+    grid_export_today_kwh: float = 0.0
+    grid_cost_gbp: float = 0.0
+    grid_export_revenue_gbp: float = 0.0
+    net_daily_cost_gbp: float = 0.0
+    standing_charge_p_per_day: float = 0.0
+    current_rate_p: float = 0.0
+    current_export_rate_p: float = 0.0
+    today_loading: bool = False
+    today_error: str = ""
+    today_weather_code: int = -1
+    today_weather_max_temp_c: float = 0.0
+
+    # Today charts
+    today_chart_data: list[dict] = []
+    today_price_data: list[dict] = []
+
+    # History page
+    history_start_date: str = ""
+    history_end_date: str = ""
+    history_loading: bool = False
+    history_error: str = ""
+    history_solar_kwh: float = 0.0
+    history_grid_import_kwh: float = 0.0
+    history_grid_export_kwh: float = 0.0
+    history_grid_cost_gbp: float = 0.0
+    history_grid_export_revenue_gbp: float = 0.0
+    history_net_period_cost_gbp: float = 0.0
+    history_chart_data: list[dict] = []
+    history_has_data: bool = False
+
+    # Inverter stats
+    inverter_pvpower_kw: float = 0.0
+    inverter_feedin_kw: float = 0.0
+    inverter_power_in_kw: float = 0.0
+    inverter_power_out_kw: float = 0.0
+    inverter_battery_power_kw: float = 0.0
+    inverter_usage_kw: float = 0.0
+    inverter_soc_pct: float = 0.0
+    inverter_battery_temp_c: float = 0.0
+    inverter_temp_c: float = 0.0
+    inverter_grid_voltage_v: float = 0.0
+    inverter_recorded_at: str = ""
+    inverter_loading: bool = False
+    inverter_error: str = ""
+    inverter_refresh_interval: int = 30
+    inverter_countdown: int = 30
+    inverter_poll_generation: int = 0
+
+    # Calibration
+    export_factor: float = 1.0
+    calibration_computed_at: str = ""
+    calibration_octopus_kwh: float = 0.0
+    calibration_influx_kwh: float = 0.0
+    calibration_loading: bool = False
+    calibration_error: str = ""
+
+    # Cache management
+    cache_clear_message: str = ""
+
+    @rx.var
+    def corrected_export_today_kwh(self) -> float:
+        return round(self.grid_export_today_kwh * self.export_factor, 2)
+
+    @rx.var
+    def corrected_export_revenue_gbp(self) -> float:
+        return round(self.grid_export_revenue_gbp * self.export_factor, 2)
+
+    @rx.var
+    def corrected_net_daily_cost_gbp(self) -> float:
+        # Adjust pre-computed net by (1 - factor) × raw revenue to correct for factor
+        return round(
+            self.net_daily_cost_gbp + self.grid_export_revenue_gbp * (1.0 - self.export_factor),
+            2,
+        )
+
+    @rx.var
+    def corrected_history_export_kwh(self) -> float:
+        return round(self.history_grid_export_kwh * self.export_factor, 2)
+
+    @rx.var
+    def corrected_history_export_revenue_gbp(self) -> float:
+        return round(self.history_grid_export_revenue_gbp * self.export_factor, 2)
+
+    @rx.var
+    def corrected_history_net_period_cost_gbp(self) -> float:
+        return round(
+            self.history_net_period_cost_gbp + self.history_grid_export_revenue_gbp * (1.0 - self.export_factor),
+            2,
+        )
+
+    # ── Formatted price strings ────────────────────────────────────────────────
+
+    @rx.var
+    def grid_cost_str(self) -> str:
+        return f"£{self.grid_cost_gbp:.2f}"
+
+    @rx.var
+    def corrected_export_revenue_str(self) -> str:
+        return f"£{round(self.grid_export_revenue_gbp * self.export_factor, 2):.2f}"
+
+    @rx.var
+    def corrected_net_daily_cost_str(self) -> str:
+        return f"£{round(self.net_daily_cost_gbp + self.grid_export_revenue_gbp * (1.0 - self.export_factor), 2):.2f}"
+
+    @rx.var
+    def current_rate_str(self) -> str:
+        return f"{self.current_rate_p:.2f}p"
+
+    @rx.var
+    def current_export_rate_str(self) -> str:
+        return f"Export: {self.current_export_rate_p:.2f}p"
+
+    @rx.var
+    def avg_import_rate_str(self) -> str:
+        rates = [row["import"] for row in self.today_price_data if row.get("import", 100) < 90]
+        if not rates:
+            return "—"
+        return f"{sum(rates) / len(rates):.2f}p"
+
+    @rx.var
+    def avg_export_rate_str(self) -> str:
+        rates = [row["export"] for row in self.today_price_data if row.get("export", 100) < 90]
+        if not rates:
+            return "Export: —"
+        return f"Export: {sum(rates) / len(rates):.2f}p"
+
+    @rx.var
+    def avg_paid_rate_str(self) -> str:
+        total_kwh = 0.0
+        total_cost_p = 0.0
+        for chart, price in zip(self.today_chart_data, self.today_price_data):
+            kwh = chart.get("grid_import") or 0.0
+            rate = price.get("import") or 0.0
+            if kwh > 0 and rate < 90:
+                total_kwh += kwh
+                total_cost_p += kwh * rate
+        if total_kwh <= 0:
+            return "—"
+        return f"{total_cost_p / total_kwh:.2f}p"
+
+    @rx.var
+    def today_weather_icon(self) -> str:
+        c = self.today_weather_code
+        if c < 0:
+            return "help-circle"
+        if c == 0 or c == 1:
+            return "sun"
+        if c == 2:
+            return "cloud-sun"
+        if c == 3:
+            return "cloud"
+        if c in (45, 48):
+            return "cloud-fog"
+        if c in (51, 53, 55, 56, 57):
+            return "cloud-drizzle"
+        if c in (61, 63, 65, 66, 67, 80, 81, 82):
+            return "cloud-rain"
+        if c in (71, 73, 75, 77, 85, 86):
+            return "cloud-snow"
+        if c in (95, 96, 99):
+            return "cloud-lightning"
+        return "cloud"
+
+    @rx.var
+    def today_weather_label(self) -> str:
+        c = self.today_weather_code
+        if c < 0:
+            return "—"
+        if c == 0:
+            return "Clear sky"
+        if c == 1:
+            return "Mainly clear"
+        if c == 2:
+            return "Partly cloudy"
+        if c == 3:
+            return "Overcast"
+        if c in (45, 48):
+            return "Foggy"
+        if c in (51, 53, 55):
+            return "Drizzle"
+        if c in (56, 57):
+            return "Freezing drizzle"
+        if c in (61, 63, 65):
+            return "Rain"
+        if c in (66, 67):
+            return "Freezing rain"
+        if c in (71, 73, 75, 77):
+            return "Snow"
+        if c in (80, 81, 82):
+            return "Showers"
+        if c in (85, 86):
+            return "Snow showers"
+        if c in (95, 96, 99):
+            return "Thunderstorm"
+        return "—"
+
+    @rx.var
+    def today_weather_temp_str(self) -> str:
+        if self.today_weather_code < 0:
+            return ""
+        return f"Max {self.today_weather_max_temp_c:.0f}°C"
+
+    @rx.var
+    def history_grid_cost_str(self) -> str:
+        return f"£{self.history_grid_cost_gbp:.2f}"
+
+    @rx.var
+    def history_grid_export_revenue_str(self) -> str:
+        return f"£{self.history_grid_export_revenue_gbp:.2f}"
+
+    @rx.var
+    def history_net_period_cost_str(self) -> str:
+        return f"£{self.history_net_period_cost_gbp:.2f}"
+
+    @rx.var
+    def calibration_label(self) -> str:
+        """Subtitle for export stat cards: '×1.092 calibrated' or 'uncalibrated'."""
+        if not self.calibration_computed_at:
+            return "uncalibrated"
+        return f"×{self.export_factor:.3f} calibrated"
+
+    @rx.var
+    def calibration_age_str(self) -> str:
+        """Human-readable age of the calibration data, e.g. '3d ago'."""
+        if not self.calibration_computed_at:
+            return "never"
+        try:
+            dt = datetime.fromisoformat(self.calibration_computed_at)
+            diff = datetime.now(timezone.utc) - dt.astimezone(timezone.utc)
+            days = diff.days
+            if days == 0:
+                hours = diff.seconds // 3600
+                return f"{hours}h ago" if hours > 0 else "just now"
+            return f"{days}d ago"
+        except Exception:
+            return "unknown"
+
+    @rx.event
+    def set_page(self, page: str):
+        self.current_page = page
+
+    @rx.event
+    def set_history_start(self, value: str):
+        self.history_start_date = value
+
+    @rx.event
+    def set_history_end(self, value: str):
+        self.history_end_date = value
+
+    @rx.event
+    def select_yesterday(self):
+        config = _get_config()
+        tz = ZoneInfo(config.app.timezone)
+        yesterday = (datetime.now(tz) - timedelta(days=1)).date().isoformat()
+        self.history_start_date = yesterday
+        self.history_end_date = yesterday
+        return AppState.load_history
+
+    @rx.event
+    def select_day_before_yesterday(self):
+        config = _get_config()
+        tz = ZoneInfo(config.app.timezone)
+        day_before = (datetime.now(tz) - timedelta(days=2)).date().isoformat()
+        self.history_start_date = day_before
+        self.history_end_date = day_before
+        return AppState.load_history
+
+    @rx.event
+    def select_this_week(self):
+        config = _get_config()
+        tz = ZoneInfo(config.app.timezone)
+        today = datetime.now(tz).date()
+        monday = today - timedelta(days=today.weekday())
+        self.history_start_date = monday.isoformat()
+        self.history_end_date = today.isoformat()
+        return AppState.load_history
+
+    @rx.event
+    def select_last_week(self):
+        config = _get_config()
+        tz = ZoneInfo(config.app.timezone)
+        today = datetime.now(tz).date()
+        last_monday = today - timedelta(days=today.weekday() + 7)
+        last_sunday = last_monday + timedelta(days=6)
+        self.history_start_date = last_monday.isoformat()
+        self.history_end_date = last_sunday.isoformat()
+        return AppState.load_history
+
+    @rx.event(background=True)
+    async def load_history(self):
+        async with self:
+            if not self.history_start_date or not self.history_end_date:
+                self.history_error = "Please select both a start and end date."
+                return
+            self.history_loading = True
+            self.history_error = ""
+            self.history_has_data = False
+
+        config = _get_config()
+        try:
+            start = date.fromisoformat(self.history_start_date)
+            end = date.fromisoformat(self.history_end_date)
+            if end < start:
+                async with self:
+                    self.history_error = "End date must be on or after start date."
+                    self.history_loading = False
+                return
+
+            rows = await asyncio.to_thread(get_historical_range_data, config, start, end)
+
+            try:
+                standing_total_gbp = await asyncio.to_thread(fetch_total_standing_charge_gbp, config, start, end)
+            except Exception as exc:
+                delta_days = (end - start).days + 1
+                standing_total_gbp = config.octopus.standing_charge_p_per_day * delta_days / 100
+                import logging
+                logging.getLogger(__name__).warning("standing charge range fetch failed: %s", exc)
+
+            async with self:
+                self.history_chart_data = rows
+                self.history_solar_kwh = round(sum(r["solar_kwh"] for r in rows), 2)
+                self.history_grid_import_kwh = round(sum(r["grid_import_kwh"] for r in rows), 2)
+                self.history_grid_export_kwh = round(sum(r["grid_export_kwh"] for r in rows), 2)
+                self.history_grid_cost_gbp = round(sum(r["grid_cost_gbp"] for r in rows), 2)
+                self.history_grid_export_revenue_gbp = round(sum(r["grid_export_revenue_gbp"] for r in rows), 2)
+                self.history_net_period_cost_gbp = round(
+                    sum(r["grid_cost_gbp"] for r in rows)
+                    - sum(r["grid_export_revenue_gbp"] for r in rows)
+                    + standing_total_gbp,
+                    2,
+                )
+                self.history_has_data = True
+                self.history_loading = False
+        except Exception as exc:
+            async with self:
+                self.history_error = str(exc)
+                self.history_loading = False
+
+    @rx.event
+    def on_load(self):
+        return [AppState.load_cached_strategy, AppState.refresh_today_data, AppState.load_cached_calibration]
+
+    @rx.event
+    def load_cached_strategy(self):
+        result = load_strategy()
+        if result:
+            self._apply_strategy(result)
+
+    @rx.event
+    def load_cached_calibration(self):
+        data = load_calibration()
+        if data:
+            self.export_factor = data.get("factor", 1.0)
+            self.calibration_computed_at = data.get("computed_at", "")
+            self.calibration_octopus_kwh = data.get("octopus_kwh", 0.0)
+            self.calibration_influx_kwh = data.get("influx_kwh", 0.0)
+
+    @rx.event(background=True)
+    async def recalibrate(self):
+        async with self:
+            self.calibration_loading = True
+            self.calibration_error = ""
+
+        config = _get_config()
+        try:
+            from solariq.calibration import compute_export_factor
+            result = await asyncio.to_thread(compute_export_factor, config)
+            await asyncio.to_thread(save_calibration, result)
+            async with self:
+                self.export_factor = result["factor"]
+                self.calibration_computed_at = result["computed_at"]
+                self.calibration_octopus_kwh = result["octopus_kwh"]
+                self.calibration_influx_kwh = result["influx_kwh"]
+                self.calibration_loading = False
+        except Exception as exc:
+            async with self:
+                self.calibration_error = str(exc)
+                self.calibration_loading = False
+
+    @rx.var
+    def inverter_refresh_progress(self) -> int:
+        if self.inverter_refresh_interval == 0:
+            return 0
+        return int(self.inverter_countdown / self.inverter_refresh_interval * 100)
+
+    def _write_inverter_stats(self, stats: dict | None) -> None:
+        if stats:
+            self.inverter_pvpower_kw = stats["pvpower_kw"]
+            self.inverter_feedin_kw = stats["feedin_kw"]
+            self.inverter_power_in_kw = stats["power_in_kw"]
+            self.inverter_power_out_kw = stats["power_out_kw"]
+            self.inverter_battery_power_kw = stats["battery_power_kw"]
+            self.inverter_usage_kw = stats["usage_kw"]
+            self.inverter_soc_pct = stats["soc_pct"]
+            self.inverter_battery_temp_c = stats["battery_temp_c"]
+            self.inverter_temp_c = stats["inverter_temp_c"]
+            self.inverter_grid_voltage_v = stats["grid_voltage_v"]
+            self.inverter_recorded_at = stats["recorded_at"]
+        else:
+            self.inverter_error = "No data returned from inverter"
+
+    @rx.event(background=True)
+    async def load_inverter_stats(self):
+        """Manual refresh — fetches immediately and resets the auto-refresh countdown."""
+        config = _get_config()
+        async with self:
+            self.inverter_loading = True
+            self.inverter_error = ""
+        try:
+            stats = await asyncio.to_thread(get_latest_inverter_stats, config)
+            async with self:
+                self._write_inverter_stats(stats)
+                self.inverter_loading = False
+                self.inverter_countdown = self.inverter_refresh_interval
+        except Exception as exc:
+            async with self:
+                self.inverter_error = str(exc)
+                self.inverter_loading = False
+                self.inverter_countdown = self.inverter_refresh_interval
+
+    @rx.event
+    def set_inverter_refresh_interval(self, interval: int):
+        self.inverter_refresh_interval = interval
+        self.inverter_countdown = interval
+        return AppState.start_inverter_polling
+
+    @rx.event(background=True)
+    async def start_inverter_polling(self):
+        """Load stats immediately then tick every second, refreshing when countdown hits zero."""
+        config = _get_config()
+        async with self:
+            self.inverter_poll_generation += 1
+            my_gen = self.inverter_poll_generation
+            self.inverter_loading = True
+            self.inverter_error = ""
+
+        try:
+            stats = await asyncio.to_thread(get_latest_inverter_stats, config)
+            async with self:
+                if self.inverter_poll_generation != my_gen:
+                    return
+                self._write_inverter_stats(stats)
+                self.inverter_loading = False
+                self.inverter_countdown = self.inverter_refresh_interval
+        except Exception as exc:
+            async with self:
+                self.inverter_error = str(exc)
+                self.inverter_loading = False
+                self.inverter_countdown = self.inverter_refresh_interval
+
+        while True:
+            await asyncio.sleep(1)
+            async with self:
+                if self.inverter_poll_generation != my_gen:
+                    return
+                self.inverter_countdown = max(0, self.inverter_countdown - 1)
+                do_refresh = self.inverter_countdown == 0
+
+            if do_refresh:
+                async with self:
+                    self.inverter_loading = True
+                    self.inverter_error = ""
+                try:
+                    stats = await asyncio.to_thread(get_latest_inverter_stats, config)
+                    async with self:
+                        if self.inverter_poll_generation != my_gen:
+                            return
+                        self._write_inverter_stats(stats)
+                        self.inverter_loading = False
+                        self.inverter_countdown = self.inverter_refresh_interval
+                except Exception as exc:
+                    async with self:
+                        self.inverter_error = str(exc)
+                        self.inverter_loading = False
+                        self.inverter_countdown = self.inverter_refresh_interval
+
+    @rx.event
+    def clear_cache(self):
+        from pathlib import Path
+        cleared = []
+        for path in (DEFAULT_TODAY_PATH, DEFAULT_STRATEGY_PATH, DEFAULT_SOLAR_FORECAST_PATH, DEFAULT_CALIBRATION_PATH, DEFAULT_TODAY_RATES_PATH):
+            p = Path(path)
+            if p.exists():
+                p.unlink()
+                cleared.append(p.name)
+        self.cache_clear_message = f"Cleared: {', '.join(cleared)}" if cleared else "Cache already empty"
+
+    def _apply_strategy(self, result) -> None:
+        self.strategy_periods = [p.to_dict() for p in result.periods]
+        self.estimated_cost_gbp = round(result.estimated_cost_gbp, 2)
+        self.solar_forecast_kwh = round(result.solar_forecast_kwh, 1)
+        self.grid_import_kwh = round(result.grid_import_kwh, 1)
+        self.strategy_computed_at = result.computed_at
+        self.strategy_target_date = result.target_date
+
+        timestamps = [
+            f"{(t * 30) // 60:02d}:{(t * 30) % 60:02d}" for t in range(48)
+        ]
+        self.tomorrow_price_data = [
+            {"time": timestamps[t], "price": result.agile_prices[t], "charge": result.charge_mode_slots[t]}
+            for t in range(48)
+        ]
+        self.tomorrow_solar_data = [
+            {"time": timestamps[t], "solar": result.solar_forecast[t], "soc_kwh": result.battery_soc_forecast[t]}
+            for t in range(48)
+        ]
+
+    @rx.event(background=True)
+    async def refresh_strategy(self):
+        async with self:
+            self.strategy_loading = True
+            self.strategy_error = ""
+
+        config = _get_config()
+        target = _tomorrow(config)
+
+        if not _after_refresh_time(config):
+            async with self:
+                self.strategy_loading = False
+            yield rx.toast.warning(
+                "Tomorrow's Agile prices are not yet published — available after 16:00. Try again after 16:15.",
+                duration=6000,
+                close_button=True,
+            )
+            return
+
+        try:
+            agile = await asyncio.to_thread(fetch_agile_prices, config, target)
+            export = await asyncio.to_thread(fetch_export_prices, config, target)
+            solar = await asyncio.to_thread(fetch_solar_forecast, config, target)
+            load = await asyncio.to_thread(build_load_profile, config, target)
+            today_data = await asyncio.to_thread(get_today_live_data, config)
+            initial_soc = today_data.battery_soc_kwh or (config.battery.capacity_kwh * 0.5)
+
+            result = await asyncio.to_thread(
+                solve, agile, export, solar, load, initial_soc, config, target.isoformat()
+            )
+            await asyncio.to_thread(save_strategy, result)
+
+            async with self:
+                self._apply_strategy(result)
+                self.strategy_loading = False
+            yield rx.toast.success(
+                f"Strategy calculated for {result.target_date} — estimated cost £{result.estimated_cost_gbp:.2f}",
+                duration=0,
+                close_button=True,
+            )
+        except Exception as exc:
+            async with self:
+                self.strategy_error = str(exc)
+                self.strategy_loading = False
+
+    @rx.event(background=True)
+    async def refresh_today_data(self):
+        """Poll the worker-produced today snapshot every 30 s.
+
+        Primary path: reads cache/today.json written by the worker process.
+        Fallback: if no snapshot exists yet (worker not running or first startup),
+        fetches directly so the app works standalone in development.
+        Also picks up strategy updates written by the worker without any
+        separate polling loop.
+        """
+        async with self:
+            self.today_loading = True
+
+        last_strategy_target: str = self.strategy_target_date
+        last_known_date: date | None = None
+
+        while True:
+            poll_interval = 30
+            try:
+                config = _get_config()
+                tz = ZoneInfo(config.app.timezone)
+                today_local = datetime.now(tz).date()
+
+                # Detect date rollover — reset today's data so stale figures don't linger
+                if last_known_date is not None and today_local != last_known_date:
+                    async with self:
+                        self.battery_soc_pct = 0.0
+                        self.battery_soc_kwh = 0.0
+                        self.solar_today_kwh = 0.0
+                        self.grid_import_today_kwh = 0.0
+                        self.grid_export_today_kwh = 0.0
+                        self.grid_cost_gbp = 0.0
+                        self.grid_export_revenue_gbp = 0.0
+                        self.net_daily_cost_gbp = 0.0
+                        self.current_rate_p = 0.0
+                        self.current_export_rate_p = 0.0
+                        self.today_chart_data = []
+                        self.today_price_data = []
+                        self.today_error = ""
+                        self.today_weather_code = -1
+                        self.today_weather_max_temp_c = 0.0
+                last_known_date = today_local
+
+                snapshot = await asyncio.to_thread(load_today_snapshot)
+
+                if snapshot:
+                    # Ignore snapshots written before today (worker hasn't ticked yet)
+                    fetched_at_str = snapshot.get("fetched_at", "")
+                    if fetched_at_str:
+                        fetched_date = datetime.fromisoformat(fetched_at_str).astimezone(tz).date()
+                        if fetched_date < today_local:
+                            snapshot = None
+
+                if snapshot:
+                    if snapshot.get("error"):
+                        async with self:
+                            self.today_error = snapshot["error"]
+                            self.today_loading = False
+                    else:
+                        async with self:
+                            self.battery_soc_pct = snapshot.get("battery_soc_pct", 0.0)
+                            self.battery_soc_kwh = snapshot.get("battery_soc_kwh", 0.0)
+                            self.solar_today_kwh = snapshot.get("solar_today_kwh", 0.0)
+                            self.grid_import_today_kwh = snapshot.get("grid_import_today_kwh", 0.0)
+                            self.grid_export_today_kwh = snapshot.get("grid_export_today_kwh", 0.0)
+                            self.grid_cost_gbp = snapshot.get("grid_cost_gbp", 0.0)
+                            self.grid_export_revenue_gbp = snapshot.get("grid_export_revenue_gbp", 0.0)
+                            self.net_daily_cost_gbp = snapshot.get("net_daily_cost_gbp", 0.0)
+                            self.standing_charge_p_per_day = snapshot.get("standing_charge_p_per_day", 0.0)
+                            self.current_rate_p = snapshot.get("current_rate_p", 0.0)
+                            self.current_export_rate_p = snapshot.get("current_export_rate_p", 0.0)
+                            self.today_chart_data = snapshot.get("chart_data", [])
+                            self.today_price_data = snapshot.get("price_data", [])
+                            self.today_error = ""
+                            self.today_loading = False
+
+                else:
+                    # Worker not running — fall back to a direct fetch so dev / standalone
+                    # mode still works.
+                    poll_interval = 300
+                    try:
+                        sc = await asyncio.to_thread(fetch_standing_charge_p_per_day, config)
+                    except Exception:
+                        sc = config.octopus.standing_charge_p_per_day
+                    try:
+                        today_data = await asyncio.to_thread(get_today_live_data, config)
+                        load_profile = await asyncio.to_thread(build_load_profile, config, today_local)
+                        solar_forecast = load_solar_forecast_today()
+                        if solar_forecast is None:
+                            try:
+                                slots = await asyncio.to_thread(fetch_solar_forecast, config, today_local)
+                                await asyncio.to_thread(save_solar_forecast_today, slots, today_local.isoformat())
+                                solar_forecast = slots
+                            except Exception as exc:
+                                import logging as _log
+                                _log.getLogger(__name__).warning("solar forecast fetch failed in fallback: %s", exc)
+                        solar_forecast = solar_forecast or [0.0] * 48
+                        timestamps = today_data.timestamps
+                        chart_rows = []
+                        for i in range(48):
+                            chart_rows.append({
+                                "time": timestamps[i],
+                                "grid_import": round(today_data.actual_grid_import[i] or 0.0, 3),
+                                "grid_export": round(today_data.actual_grid_export[i] or 0.0, 3),
+                                "solar": round(today_data.actual_solar[i] or 0.0, 3),
+                                "predicted_solar": round(solar_forecast[i], 3),
+                                "soc_pct": (
+                                    (today_data.actual_battery_soc_kwh[i] or 0.0) / config.battery.capacity_kwh * 100
+                                    if today_data.actual_battery_soc_kwh[i] is not None else None
+                                ),
+                                "predicted_usage": load_profile[i],
+                                "is_actual": i <= today_data.last_data_slot,
+                            })
+                        price_rows = [
+                            {"time": timestamps[i], "import": today_data.agile_prices[i], "export": today_data.export_prices[i]}
+                            for i in range(48)
+                        ]
+                        async with self:
+                            self.battery_soc_pct = round(today_data.battery_soc_pct, 1)
+                            self.battery_soc_kwh = round(today_data.battery_soc_kwh, 1)
+                            self.solar_today_kwh = round(today_data.solar_today_kwh, 2)
+                            self.grid_import_today_kwh = round(sum(v for v in today_data.actual_grid_import if v is not None), 2)
+                            self.grid_export_today_kwh = round(sum(v for v in today_data.actual_grid_export if v is not None), 2)
+                            self.grid_cost_gbp = round(today_data.grid_cost_pence / 100, 2)
+                            self.grid_export_revenue_gbp = round(today_data.grid_export_revenue_pence / 100, 2)
+                            self.net_daily_cost_gbp = round((today_data.grid_cost_pence - today_data.grid_export_revenue_pence + sc) / 100, 2)
+                            self.standing_charge_p_per_day = sc
+                            self.current_rate_p = round(today_data.current_rate_p, 1)
+                            self.current_export_rate_p = round(today_data.current_export_rate_p, 1)
+                            self.today_chart_data = chart_rows
+                            self.today_price_data = price_rows
+                            self.today_error = ""
+                            self.today_loading = False
+                    except Exception as exc:
+                        async with self:
+                            self.today_error = str(exc)
+                            self.today_loading = False
+
+                # Fetch today's weather once per day
+                async with self:
+                    need_weather = self.today_weather_code < 0
+                if need_weather:
+                    try:
+                        code, max_temp = await asyncio.to_thread(fetch_today_weather, config)
+                        async with self:
+                            self.today_weather_code = code
+                            self.today_weather_max_temp_c = max_temp
+                    except Exception as exc:
+                        import logging as _wlog
+                        _wlog.getLogger(__name__).warning("weather fetch failed: %s", exc)
+
+                # Pick up strategy updates written by the worker without a separate loop
+                cached = await asyncio.to_thread(load_strategy)
+                if cached and cached.target_date != last_strategy_target:
+                    last_strategy_target = cached.target_date
+                    async with self:
+                        self._apply_strategy(cached)
+                    yield rx.toast.success(
+                        f"Strategy calculated for {cached.target_date} — estimated cost £{cached.estimated_cost_gbp:.2f}",
+                        duration=0,
+                        close_button=True,
+                    )
+
+            except Exception as exc:
+                # Catch-all so the polling loop never dies silently
+                import logging as _logging
+                _logging.getLogger(__name__).error("refresh_today_data loop error: %s", exc, exc_info=True)
+
+            await asyncio.sleep(poll_interval)

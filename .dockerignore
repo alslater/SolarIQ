@@ -1,0 +1,23 @@
+# Never bake secrets or local state into the image
+solariq.ini
+cache/
+logs/
+
+# Reflex build artefacts – regenerated inside the container
+.web/
+
+# Python bytecode and test artefacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Development/CI noise
+.git/
+.gitignore
+docs/
+tests/
+*.md
+Dockerfile
+docker-compose.yaml
