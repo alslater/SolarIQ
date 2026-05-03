@@ -8,12 +8,15 @@
     * HTTP API vs modbus
     * Look at HA plugins
     * modbus proxy
+    * scheduling, the TOU needs to start at midnight`
 
 3. If 2 is implemented, look at implementing a TOU manager
     * Create TOU
     * Edit TOU
     * Delete TOU
     * Apply TOU
+
+4. Show solar forecast on historical graphs
 
 
 
