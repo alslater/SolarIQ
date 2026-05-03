@@ -16,8 +16,11 @@
     * Delete TOU
     * Apply TOU
 
-4. Show solar forecast on historical graphs
+4. Show solar forecast vs PV on historical graphs
 
+5. On strategy page show soc as %
+
+6. On strategy page highlight non-considered slots or don't show them.
 
 
 
