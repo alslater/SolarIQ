@@ -1,0 +1,37 @@
+[influxdb]
+host = localhost
+port = 8086
+database = energy
+solar_database = solar
+solax_database = solax
+
+[octopus]
+api_key = YOUR_OCTOPUS_API_KEY
+agile_rate_url = https://api.octopus.energy/v1/products/AGILE-24-10-01/electricity-tariffs/E-1R-AGILE-24-10-01-J/standard-unit-rates/
+agile_export_url = https://api.octopus.energy/v1/products/AGILE-OUTGOING-19-05-13/electricity-tariffs/E-1R-AGILE-OUTGOING-19-05-13-J/standard-unit-rates/
+# Standing charge is fetched automatically from the Octopus API.
+# This value is used only if the API call fails (e.g. no internet at startup).
+standing_charge_p_per_day = 55.79
+# Export smart meter details — used for export calibration
+export_mpan = 1900092645854
+export_serial_number = 23L3537933
+
+[solcast]
+api_key = YOUR_SOLCAST_API_KEY
+resource_id = YOUR_RESOURCE_ID
+
+[battery]
+capacity_kwh = 23.2
+min_soc_pct = 10
+max_charge_kw = 7.5
+
+[app]
+timezone = Europe/London
+refresh_time = 16:15
+# log_file = /app/logs/solariq.log   # uncomment to write logs to a file
+log_level = INFO
+
+[location]
+# Used for temperature-based load profile selection (Open-Meteo API, no key needed)
+latitude = 50.89
+longitude = 0.32

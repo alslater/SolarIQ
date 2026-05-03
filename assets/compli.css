@@ -1,0 +1,66 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+/* Compli dark mode tokens */
+.dark {
+  --compli-bg:         #080c16;
+  --compli-card:       #0c1221;
+  --compli-card-alt:   #111929;
+  --compli-sidebar:    #060a12;
+  --compli-secondary:  #1c2335;
+  --compli-border:     #20283b;
+  --compli-fg:         #e0f4f8;
+  --compli-muted:      #7b8fa8;
+  --compli-primary:    #0da2e7;
+  --compli-accent:     #0a80b7;
+  --compli-pass:       #28a36a;
+  --compli-review:     #f49e0a;
+  --compli-fail:       #dc2828;
+  --compli-sidebar-fg:    #e0f4f8;
+  --compli-sidebar-muted: #7b8fa8;
+}
+
+/* Compli light mode tokens */
+:root {
+  --compli-bg:         #f5f6f8;
+  --compli-card:       #ffffff;
+  --compli-card-alt:   #f0f2f5;
+  --compli-sidebar:    #172a59;
+  --compli-secondary:  #e8edf1;
+  --compli-border:     #dcdfe4;
+  --compli-fg:         #0e1629;
+  --compli-muted:      #64748b;
+  --compli-primary:    #0a80b7;
+  --compli-accent:     #0da2e7;
+  --compli-pass:       #28a36a;
+  --compli-review:     #f49e0a;
+  --compli-fail:       #dc2828;
+  /* Sidebar always has a dark background — keep these light in both modes */
+  --compli-sidebar-fg:    #e0f4f8;
+  --compli-sidebar-muted: #94a3b8;
+}
+
+body {
+  font-family: 'Inter', system-ui, sans-serif;
+  background-color: var(--compli-bg);
+  color: var(--compli-fg);
+}
+
+/* Recharts tooltip dark/light */
+.recharts-tooltip-wrapper .recharts-default-tooltip {
+  background-color: var(--compli-card) !important;
+  border: 1px solid var(--compli-border) !important;
+  border-radius: 6px !important;
+  color: var(--compli-fg) !important;
+  font-family: 'Inter', system-ui, sans-serif !important;
+  font-size: 12px !important;
+}
+
+.recharts-cartesian-axis-tick-value {
+  fill: var(--compli-muted) !important;
+  font-family: 'Inter', system-ui, sans-serif !important;
+}
+
+.recharts-legend-item-text {
+  color: var(--compli-muted) !important;
+  font-size: 12px !important;
+}

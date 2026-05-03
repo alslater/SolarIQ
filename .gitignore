@@ -1,3 +1,8 @@
+.web
+assets/external/
+*.db
+*.py[cod]
+.states
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -217,12 +222,11 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Git worktrees
-.worktrees/
-
 # SolarIQ
 solariq.ini
 cache/
 .web/
 .superpowers/
 .claude/settings.local.json
+requirements.txt
+superpowers/
