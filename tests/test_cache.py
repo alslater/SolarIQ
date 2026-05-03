@@ -54,7 +54,6 @@ def test_get_cache_paths_uses_configured_base_dir():
     assert paths == (
         "/tmp/solariq-cache/today.json",
         "/tmp/solariq-cache/strategy.json",
-        "/tmp/solariq-cache/solar_forecast_today.json",
         "/tmp/solariq-cache/calibration.json",
         "/tmp/solariq-cache/today_rates.json",
     )

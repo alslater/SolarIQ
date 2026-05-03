@@ -421,3 +421,75 @@ def get_latest_inverter_stats(config: SolarIQConfig) -> dict | None:
     except Exception as exc:
         logger.warning("get_latest_inverter_stats failed: %s", exc)
         return None
+
+
+def save_solar_forecast_influx(
+    config: SolarIQConfig, slots: list[float], for_date: date
+) -> None:
+    """Write 48-slot Solcast forecast to InfluxDB. Each slot is one point.
+
+    Raises on InfluxDB failure — caller should catch and log.
+    """
+    from datetime import timedelta
+    tz = ZoneInfo(config.app.timezone)
+    base_local = datetime(for_date.year, for_date.month, for_date.day, 0, 0, tzinfo=tz)
+    points = []
+    for i, kwh in enumerate(slots):
+        t_local = base_local + timedelta(minutes=i * 30)
+        t_utc = t_local.astimezone(timezone.utc)
+        points.append({
+            "measurement": "solar_forecast",
+            "time": t_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "tags": {"source": "solcast"},
+            "fields": {"pv_estimate_kwh": float(kwh)},
+        })
+    client = InfluxDBClient(
+        host=config.influxdb.host,
+        port=config.influxdb.port,
+        database=config.influxdb.solcast_forecast_database,
+    )
+    client.create_database(config.influxdb.solcast_forecast_database)
+    client.write_points(points)
+    logger.info(
+        "saved %d Solcast forecast points for %s to InfluxDB", len(points), for_date
+    )
+
+
+def load_solar_forecast_influx(
+    config: SolarIQConfig, for_date: date
+) -> list[float] | None:
+    """Read 48-slot Solcast forecast from InfluxDB. Returns None if data absent or partial."""
+    from_utc, to_utc = _local_day_utc_bounds(for_date, config.app.timezone)
+    tz = ZoneInfo(config.app.timezone)
+    client = InfluxDBClient(
+        host=config.influxdb.host,
+        port=config.influxdb.port,
+        database=config.influxdb.solcast_forecast_database,
+    )
+    try:
+        result = client.query(
+            f"SELECT pv_estimate_kwh FROM solar_forecast "
+            f"WHERE time >= '{from_utc}' AND time < '{to_utc}'"
+        )
+        raw_points = list(result.get_points())
+    except Exception as exc:
+        logger.warning("load_solar_forecast_influx query failed: %s", exc)
+        return None
+
+    if len(raw_points) < 48:
+        logger.debug(
+            "load_solar_forecast_influx: only %d points for %s, returning None",
+            len(raw_points), for_date,
+        )
+        return None
+
+    slots = [0.0] * 48
+    for point in raw_points:
+        t_utc = datetime.fromisoformat(point["time"].replace("Z", "+00:00"))
+        t_local = t_utc.astimezone(tz)
+        if t_local.date() != for_date:
+            continue
+        slot = (t_local.hour * 60 + t_local.minute) // 30
+        if 0 <= slot < 48:
+            slots[slot] = float(point.get("pv_estimate_kwh") or 0.0)
+    return slots

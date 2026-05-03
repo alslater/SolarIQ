@@ -1,13 +1,18 @@
+from __future__ import annotations
+
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from solariq.config import load_config
 from solariq.optimizer.types import OptimizationResult
 
+if TYPE_CHECKING:
+    from solariq.config import SolarIQConfig
+
 DEFAULT_CACHE_DIR = "cache"
 STRATEGY_FILENAME = "strategy.json"
 TODAY_FILENAME = "today.json"
-SOLAR_FORECAST_FILENAME = "solar_forecast_today.json"
 TODAY_RATES_FILENAME = "today_rates.json"
 CALIBRATION_FILENAME = "calibration.json"
 
@@ -25,12 +30,11 @@ def _resolve_path(path: str | None, filename: str) -> Path:
     return Path(_configured_cache_dir()) / filename
 
 
-def get_cache_paths(base_dir: str | None = None) -> tuple[str, str, str, str, str]:
+def get_cache_paths(base_dir: str | None = None) -> tuple[str, str, str, str]:
     cache_dir = base_dir or _configured_cache_dir()
     return (
         str(Path(cache_dir) / TODAY_FILENAME),
         str(Path(cache_dir) / STRATEGY_FILENAME),
-        str(Path(cache_dir) / SOLAR_FORECAST_FILENAME),
         str(Path(cache_dir) / CALIBRATION_FILENAME),
         str(Path(cache_dir) / TODAY_RATES_FILENAME),
     )
@@ -82,34 +86,22 @@ def load_today_snapshot(path: str | None = None) -> dict | None:
         return None
 
 
-DEFAULT_SOLAR_FORECAST_PATH = str(Path(DEFAULT_CACHE_DIR) / SOLAR_FORECAST_FILENAME)
-
-
-def save_solar_forecast_today(slots: list[float], for_date: str, path: str | None = None) -> None:
-    """Atomically write today's Solcast forecast (48 kWh slots) to disk."""
-    target = _resolve_path(path, SOLAR_FORECAST_FILENAME)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_suffix(".tmp")
-    with open(tmp, "w") as f:
-        json.dump({"date": for_date, "slots": slots}, f)
-    tmp.replace(target)
-
-
-def load_solar_forecast_today(path: str | None = None) -> list[float] | None:
-    """Load today's cached Solcast forecast. Returns None if absent, corrupt, or stale (wrong date)."""
+def save_solar_forecast_today(
+    config: "SolarIQConfig", slots: list[float], for_date: str
+) -> None:
+    """Write today's Solcast forecast to InfluxDB."""
     from datetime import date as _date
-    target = _resolve_path(path, SOLAR_FORECAST_FILENAME)
-    try:
-        with open(target) as f:
-            data = json.load(f)
-        if data.get("date") != _date.today().isoformat():
-            return None
-        slots = data["slots"]
-        if len(slots) == 48:
-            return slots
-    except (FileNotFoundError, json.JSONDecodeError, KeyError):
-        pass
-    return None
+    from solariq.data.influx import save_solar_forecast_influx
+    save_solar_forecast_influx(config, slots, _date.fromisoformat(for_date))
+
+
+def load_solar_forecast_today(
+    config: "SolarIQConfig", for_date: str
+) -> list[float] | None:
+    """Load today's Solcast forecast from InfluxDB. Returns None if absent."""
+    from datetime import date as _date
+    from solariq.data.influx import load_solar_forecast_influx
+    return load_solar_forecast_influx(config, _date.fromisoformat(for_date))
 
 
 DEFAULT_TODAY_RATES_PATH = str(Path(DEFAULT_CACHE_DIR) / TODAY_RATES_FILENAME)
