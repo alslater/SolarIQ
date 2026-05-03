@@ -2,6 +2,8 @@
 
 A self-hosted dashboard for homes with a SolaX inverter, battery storage, and an Octopus Agile tariff. SolarIQ shows live energy flows, tracks daily costs, displays historical usage, and calculates an optimised battery charging schedule for the following day.
 
+See [TODO.md](TODO.md) for planned features and known issues.
+
 ## Features
 
 - **Today** — live battery SOC, solar generation, grid import/export, cost, and Agile rate cards, updated every 5 minutes. Charts show per-slot energy flows, actual vs Solcast solar forecast, and today's import/export rates.
