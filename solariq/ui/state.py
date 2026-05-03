@@ -751,11 +751,11 @@ class AppState(rx.State):
                     try:
                         today_data = await asyncio.to_thread(get_today_live_data, config)
                         load_profile = await asyncio.to_thread(build_load_profile, config, today_local)
-                        solar_forecast = load_solar_forecast_today()
+                        solar_forecast = load_solar_forecast_today(config, today_local.isoformat())
                         if solar_forecast is None:
                             try:
                                 slots = await asyncio.to_thread(fetch_solar_forecast, config, today_local)
-                                await asyncio.to_thread(save_solar_forecast_today, slots, today_local.isoformat())
+                                await asyncio.to_thread(save_solar_forecast_today, config, slots, today_local.isoformat())
                                 solar_forecast = slots
                             except Exception as exc:
                                 import logging as _log

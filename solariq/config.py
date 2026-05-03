@@ -10,6 +10,7 @@ class InfluxConfig:
     database: str
     solar_database: str
     solax_database: str
+    solcast_forecast_database: str
 
 
 @dataclass
@@ -80,6 +81,7 @@ def load_config(path: str = "solariq.ini") -> SolarIQConfig:
             database=parser.get("influxdb", "database", fallback="energy"),
             solar_database=parser.get("influxdb", "solar_database", fallback="solar"),
             solax_database=parser.get("influxdb", "solax_database", fallback="solax"),
+            solcast_forecast_database=parser.get("influxdb", "solcast_forecast_database", fallback="solcast"),
         ),
         octopus=OctopusConfig(
             api_key=parser.get("octopus", "api_key"),

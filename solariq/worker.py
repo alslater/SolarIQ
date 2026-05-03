@@ -32,7 +32,7 @@ from solariq.cache import (
 )
 from solariq.calibration import compute_export_factor
 from solariq.config import SolarIQConfig, load_config
-from solariq.data.influx import get_today_live_data
+from solariq.data.influx import get_today_live_data, load_solar_forecast_influx, save_solar_forecast_influx
 from solariq.data.load_profile import build_load_profile
 from solariq.data.octopus import (
     UNPUBLISHED_RATE_CAP_P,
@@ -104,12 +104,13 @@ def refresh_today() -> None:
         load_profile = build_load_profile(config, date.today())
 
         timestamps = today_data.timestamps
-        solar_forecast = load_solar_forecast_today()
+        today_str = date.today().isoformat()
+        solar_forecast = load_solar_forecast_today(config, today_str)
         if solar_forecast is None:
-            # Cache is stale (new day) — refresh inline rather than showing zeros
+            # Cache miss (new day or first run) — refresh inline rather than showing zeros
             try:
                 refresh_solar_forecast_today()
-                solar_forecast = load_solar_forecast_today()
+                solar_forecast = load_solar_forecast_today(config, today_str)
             except Exception as exc:
                 logger.warning("inline solar forecast refresh failed: %s", exc)
         solar_forecast = solar_forecast or [0.0] * 48
@@ -186,12 +187,18 @@ def _maybe_refresh_strategy() -> None:
         agile = fetch_agile_prices(config, target)
         export = fetch_export_prices(config, target)
         solar_estimated = False
-        try:
-            solar = fetch_solar_forecast(config, target)
-        except Exception as exc:
-            logger.warning("Solcast unavailable, using zero solar forecast for strategy: %s", exc)
-            solar = [0.0] * 48
-            solar_estimated = True
+        solar = load_solar_forecast_influx(config, target)
+        if solar is None:
+            try:
+                solar = fetch_solar_forecast(config, target)
+                try:
+                    save_solar_forecast_influx(config, solar, target)
+                except Exception as exc:
+                    logger.warning("failed to cache tomorrow's forecast: %s", exc)
+            except Exception as exc:
+                logger.warning("Solcast unavailable, using zero solar forecast for strategy: %s", exc)
+                solar = [0.0] * 48
+                solar_estimated = True
         load = build_load_profile(config, target)
         today_data = get_today_live_data(config)
         initial_soc = today_data.battery_soc_kwh or (config.battery.capacity_kwh * 0.5)
@@ -210,7 +217,7 @@ def refresh_solar_forecast_today() -> None:
     logger.info("refreshing Solcast forecast for %s", today)
     try:
         slots = fetch_solar_forecast(config, today)
-        save_solar_forecast_today(slots, today.isoformat())
+        save_solar_forecast_today(config, slots, today.isoformat())
         logger.info("solar forecast cached: total %.2f kWh", sum(slots))
     except Exception as exc:
         logger.warning("solar forecast refresh failed: %s", exc)
