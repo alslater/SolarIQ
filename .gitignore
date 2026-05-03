@@ -216,3 +216,12 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Git worktrees
+.worktrees/
+
+# SolarIQ
+solariq.ini
+cache/
+.web/
+.superpowers/
