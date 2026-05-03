@@ -7,10 +7,10 @@ instances read every 30 seconds.
 
 Usage:
     python -m solariq.worker          # production
-    pipenv run python -m solariq.worker
+    uv run python -m solariq.worker
 
 Docker: uses the same image as the web service, different CMD:
-    command: ["python", "-m", "solariq.worker"]
+    command: ["uv", "run", "python", "-m", "solariq.worker"]
 """
 
 import logging
@@ -35,6 +35,7 @@ from solariq.config import SolarIQConfig, load_config
 from solariq.data.influx import get_today_live_data
 from solariq.data.load_profile import build_load_profile
 from solariq.data.octopus import (
+    UNPUBLISHED_RATE_CAP_P,
     fetch_agile_prices,
     fetch_export_prices,
     fetch_standing_charge_p_per_day,
@@ -132,8 +133,8 @@ def refresh_today() -> None:
         price_data = [
             {
                 "time": timestamps[i],
-                "import": today_data.agile_prices[i],
-                "export": today_data.export_prices[i],
+                "import": 0.0 if today_data.agile_prices[i] >= UNPUBLISHED_RATE_CAP_P else today_data.agile_prices[i],
+                "export": 0.0 if today_data.export_prices[i] >= UNPUBLISHED_RATE_CAP_P else today_data.export_prices[i],
             }
             for i in range(48)
         ]

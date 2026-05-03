@@ -28,6 +28,7 @@ max_charge_kw = 7.5
 [app]
 timezone = Europe/London
 refresh_time = 16:15
+cache_dir = /tmp/solariq-cache
 # log_file = /app/logs/solariq.log   # uncomment to write logs to a file
 log_level = INFO
 

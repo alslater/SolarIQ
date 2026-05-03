@@ -50,7 +50,7 @@ def settings_tab() -> rx.Component:
                         style={"font_size": "13px", "color": t.MUTED},
                     ),
                     rx.text(
-                        f"Computed: {AppState.calibration_age_str} ({AppState.calibration_computed_at})",
+                        f"Computed: {AppState.calibration_age_str} ({AppState.calibration_computed_at_local})",
                         style={"font_size": "12px", "color": t.MUTED},
                     ),
                     spacing="1",

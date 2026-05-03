@@ -39,6 +39,7 @@ def test_app_config(test_ini_path):
     config = load_config(test_ini_path)
     assert config.app.timezone == "Europe/London"
     assert config.app.refresh_time == "16:15"
+    assert config.app.cache_dir == "test-cache"
 
 
 def test_missing_file_raises():

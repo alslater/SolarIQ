@@ -24,9 +24,10 @@ def _slot_timestamps() -> list[str]:
 
 
 def _local_day_utc_bounds(day: date, tz_name: str) -> tuple[str, str]:
+    from datetime import timedelta
     tz = ZoneInfo(tz_name)
     start = datetime(day.year, day.month, day.day, 0, 0, tzinfo=tz)
-    end = datetime(day.year, day.month, day.day, 23, 30, tzinfo=tz)
+    end = start + timedelta(days=1)
     fmt = "%Y-%m-%dT%H:%M:%SZ"
     return (
         start.astimezone(timezone.utc).strftime(fmt),
@@ -106,7 +107,7 @@ def _query_solax_slots(
     )
     result = client.query(
         f"SELECT MEAN(pvpower) AS pvpower, MEAN(power_in) AS power_in, "
-        f"MEAN(power_out) AS power_out, LAST(soc) AS soc "
+        f"MEAN(power_out) AS power_out, MEAN(usage) AS usage, LAST(soc) AS soc "
         f"FROM solaxdata "
         f"WHERE time >= '{from_utc}' AND time <= '{to_utc}' "
         f"GROUP BY time(30m) fill(none)"
@@ -146,6 +147,7 @@ def get_today_live_data(
             logger.warning("failed to cache today's rates: %s", exc)
 
     timestamps = _slot_timestamps()
+    actual_usage: list[float | None] = [None] * SLOTS
     actual_solar: list[float | None] = [None] * SLOTS
     actual_grid_import: list[float | None] = [None] * SLOTS
     actual_grid_export: list[float | None] = [None] * SLOTS
@@ -167,11 +169,14 @@ def get_today_live_data(
         pvpower = float(point.get("pvpower") or 0.0)
         power_in = float(point.get("power_in") or 0.0)
         power_out = float(point.get("power_out") or 0.0)
+        usage = point.get("usage")
         soc = point.get("soc")
 
         actual_solar[slot] = pvpower * 0.5       # mean kW × 0.5 h = kWh
         actual_grid_import[slot] = power_in * 0.5
         actual_grid_export[slot] = power_out * 0.5
+        if usage is not None:
+            actual_usage[slot] = float(usage) * 0.5
         if soc is not None:
             actual_battery_soc_kwh[slot] = float(soc) / 100 * config.battery.capacity_kwh
             battery_soc_pct = float(soc)
@@ -212,7 +217,7 @@ def get_today_live_data(
         current_export_rate_p=current_export_rate_p,
         last_data_slot=last_data_slot,
         timestamps=timestamps,
-        actual_usage=[None] * SLOTS,
+        actual_usage=actual_usage,
         actual_solar=actual_solar,
         actual_battery_soc_kwh=actual_battery_soc_kwh,
         actual_grid_import=actual_grid_import,

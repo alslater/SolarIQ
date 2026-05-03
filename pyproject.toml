@@ -1,0 +1,23 @@
+[project]
+name = "solariq"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "reflex>=0.6",
+    "pulp>=2.8",
+    "influxdb>=5.3.2",
+    "requests",
+    "numpy",
+    "pandas",
+    "apscheduler",
+    "tenacity",
+]
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-mock",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
