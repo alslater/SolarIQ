@@ -24,3 +24,4 @@
 
 7. On strategy page, provide some way of dismissing errors.
 
+8. Not entirely sure about time alignment of the solar forecast, it does not look right comparing with the website, see (https://toolkit.solcast.com.au/home-pv-system/96f5-db62-fe5d-dd53/detail)
