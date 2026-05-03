@@ -113,6 +113,8 @@ class AppState(rx.State):
     history_grid_export_kwh: float = 0.0
     history_grid_cost_gbp: float = 0.0
     history_grid_export_revenue_gbp: float = 0.0
+    history_solar_saving_gbp: float = 0.0
+    history_battery_peak_saving_gbp: float = 0.0
     history_net_period_cost_gbp: float = 0.0
     history_chart_data: list[dict] = []
     history_has_data: bool = False
@@ -298,6 +300,14 @@ class AppState(rx.State):
         return f"£{self.history_grid_export_revenue_gbp:.2f}"
 
     @rx.var
+    def history_solar_saving_str(self) -> str:
+        return f"£{self.history_solar_saving_gbp:.2f}"
+
+    @rx.var
+    def history_battery_peak_saving_str(self) -> str:
+        return f"£{self.history_battery_peak_saving_gbp:.2f}"
+
+    @rx.var
     def history_net_period_cost_str(self) -> str:
         return f"£{self.history_net_period_cost_gbp:.2f}"
 
@@ -424,6 +434,8 @@ class AppState(rx.State):
                 self.history_grid_export_kwh = round(sum(r["grid_export_kwh"] for r in rows), 2)
                 self.history_grid_cost_gbp = round(sum(r["grid_cost_gbp"] for r in rows), 2)
                 self.history_grid_export_revenue_gbp = round(sum(r["grid_export_revenue_gbp"] for r in rows), 2)
+                self.history_solar_saving_gbp = round(sum(r["solar_saving_gbp"] for r in rows), 2)
+                self.history_battery_peak_saving_gbp = round(sum(r["battery_peak_saving_gbp"] for r in rows), 2)
                 self.history_net_period_cost_gbp = round(
                     sum(r["grid_cost_gbp"] for r in rows)
                     - sum(r["grid_export_revenue_gbp"] for r in rows)
