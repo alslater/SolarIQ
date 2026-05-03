@@ -222,9 +222,11 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# SolarIQ project-specific
+# SolarIQ
 solariq.ini
 cache/
 .web/
+.superpowers/
+.claude/settings.local.json
 requirements.txt
 superpowers/
