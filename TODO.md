@@ -22,5 +22,5 @@
 
 6. On strategy page highlight non-considered slots or don't show them.
 
-
+7. On strategy page, provide some way of dismissing errors.
 
