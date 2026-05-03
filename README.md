@@ -24,8 +24,7 @@ A self-hosted dashboard for homes with a SolaX inverter, battery storage, and an
 ### 1. Install dependencies
 
 ```bash
-pip install pipenv
-pipenv sync --dev
+uv sync
 ```
 
 ### 2. Configure
@@ -40,13 +39,13 @@ cp solariq.ini.example solariq.ini
 In one terminal start the Reflex web app:
 
 ```bash
-pipenv run reflex run
+uv run reflex run
 ```
 
 In a second terminal start the background worker (fetches live data every 5 minutes and runs the daily strategy calculation):
 
 ```bash
-pipenv run python -m solariq.worker
+uv run python -m solariq.worker
 ```
 
 The UI is available at `http://localhost:3002`. The first start compiles the Next.js frontend — this takes 30–60 seconds; subsequent starts are fast.
@@ -54,7 +53,7 @@ The UI is available at `http://localhost:3002`. The first start compiles the Nex
 ### 4. Tests
 
 ```bash
-pipenv run pytest
+uv run pytest
 ```
 
 ## Docker deployment

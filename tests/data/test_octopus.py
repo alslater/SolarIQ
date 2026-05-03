@@ -62,7 +62,7 @@ def test_fetch_export_prices_returns_48_slots(config):
 
 
 def test_fetch_agile_prices_returns_partial_when_not_yet_published(config):
-    """Returns 48 slots even when prices aren't published yet (zeros for missing)."""
+    """Returns 48 slots even when prices aren't published yet (100.0 cap for missing)."""
     target = date(2026, 5, 3)
     results = [
         {"valid_from": _slot_utc(target, 0), "value_inc_vat": 10.0},
@@ -73,7 +73,7 @@ def test_fetch_agile_prices_returns_partial_when_not_yet_published(config):
         prices = fetch_agile_prices(config, target_date=target)
     assert len(prices) == 48
     assert prices[0] == pytest.approx(10.0)
-    assert prices[1] == pytest.approx(0.0)  # not published yet
+    assert prices[1] == pytest.approx(100.0)  # capped — not published yet
 
 
 def test_fetch_octopus_export_consumption_kwh(config):

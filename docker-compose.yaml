@@ -8,7 +8,7 @@ services:
   worker:
     image: YOUR_DOCKERHUB_USERNAME/solariq:latest
     restart: unless-stopped
-    command: ["python", "-m", "solariq.worker"]
+    command: ["uv", "run", "python", "-m", "solariq.worker"]
 
     volumes:
       - ./config/solariq.ini:/app/solariq.ini:ro
@@ -25,16 +25,14 @@ services:
       - worker
 
     ports:
-      # Frontend (Next.js)
+      # Single port serves both frontend and backend websocket in production
       - "3002:3002"
-      # Backend websocket – browsers connect here directly
-      - "8002:8002"
 
     environment:
       # Set to the IP or hostname of your Raspberry Pi so the browser
       # JavaScript can reach the backend websocket from the local network.
-      # Example: http://192.168.1.50:8002
-      - API_URL=http://YOUR_PI_IP:8002
+      # Example: http://192.168.1.50:3002
+      - API_URL=http://YOUR_PI_IP:3002
 
     volumes:
       - ./config/solariq.ini:/app/solariq.ini:ro

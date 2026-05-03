@@ -3,6 +3,7 @@ from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import requests
+from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception, before_sleep_log
 
 from solariq.config import SolarIQConfig
 
@@ -24,12 +25,31 @@ def _date_to_utc_bounds(target_date: date, tz_name: str) -> tuple[str, str]:
     )
 
 
+def _is_transient(exc: BaseException) -> bool:
+    """Retry on network errors and 5xx responses; not on 4xx (bad config/auth)."""
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        return True
+    if isinstance(exc, requests.exceptions.Timeout):
+        return True
+    if isinstance(exc, requests.exceptions.HTTPError):
+        return exc.response is not None and exc.response.status_code >= 500
+    return False
+
+
+@retry(
+    retry=retry_if_exception(_is_transient),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=8),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
 def _fetch_rates(url: str, api_key: str, from_utc: str, to_utc: str) -> list[dict]:
     logger.info("GET %s (period_from=%s, period_to=%s)", url, from_utc, to_utc)
     response = requests.get(
         url,
         params={"period_from": from_utc, "period_to": to_utc},
         auth=(api_key, ""),
+        timeout=10,
     )
     response.raise_for_status()
     data = response.json()
@@ -38,7 +58,7 @@ def _fetch_rates(url: str, api_key: str, from_utc: str, to_utc: str) -> list[dic
     return results
 
 
-_UNPUBLISHED_RATE_CAP_P = 100.0  # p/kWh — used for slots not yet published by Octopus
+UNPUBLISHED_RATE_CAP_P = 100.0  # p/kWh — used for slots not yet published by Octopus
 
 
 def _rates_to_48_slots(results: list[dict], target_date: date, tz_name: str, future_only: bool = False) -> list[float]:
@@ -60,7 +80,7 @@ def _rates_to_48_slots(results: list[dict], target_date: date, tz_name: str, fut
         else:
             # Slot not returned by Octopus — either not yet published or genuinely zero.
             # Use the cap price so the optimizer never charges into an unknown slot.
-            slots.append(_UNPUBLISHED_RATE_CAP_P)
+            slots.append(UNPUBLISHED_RATE_CAP_P)
     return slots
 
 
@@ -88,6 +108,13 @@ def _standing_charges_url(agile_rate_url: str) -> str:
     return agile_rate_url.replace("standard-unit-rates/", "standing-charges/")
 
 
+@retry(
+    retry=retry_if_exception(_is_transient),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=8),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=True,
+)
 def _fetch_standing_charge_results(config: SolarIQConfig, params: dict) -> list[dict]:
     url = _standing_charges_url(config.octopus.agile_rate_url)
     logger.info("fetching standing charges from %s params=%s", url, params)

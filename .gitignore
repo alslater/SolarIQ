@@ -230,3 +230,5 @@ cache/
 .claude/settings.local.json
 requirements.txt
 superpowers/
+.python-version
+.worktrees/

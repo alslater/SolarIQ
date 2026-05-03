@@ -2,8 +2,8 @@ import reflex as rx
 
 config = rx.Config(
     app_name="solariq",
-    frontend_port=3002,
-    backend_port=8002,
+    port=3002,
+    show_built_with_reflex=False,
     stylesheets=["compli.css"],
     disable_plugins=[rx.plugins.SitemapPlugin]
 )

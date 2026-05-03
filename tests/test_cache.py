@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 import pytest
-from solariq.cache import save_strategy, load_strategy
+from solariq.cache import get_cache_paths, save_strategy, load_strategy
 from solariq.optimizer.types import OptimizationResult, StrategyPeriod
 
 
@@ -47,6 +47,17 @@ def test_save_creates_valid_json(tmp_path):
         data = json.load(f)
     assert "target_date" in data
     assert "periods" in data
+
+
+def test_get_cache_paths_uses_configured_base_dir():
+    paths = get_cache_paths("/tmp/solariq-cache")
+    assert paths == (
+        "/tmp/solariq-cache/today.json",
+        "/tmp/solariq-cache/strategy.json",
+        "/tmp/solariq-cache/solar_forecast_today.json",
+        "/tmp/solariq-cache/calibration.json",
+        "/tmp/solariq-cache/today_rates.json",
+    )
 
 
 from solariq.cache import save_calibration, load_calibration

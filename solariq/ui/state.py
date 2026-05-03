@@ -5,11 +5,7 @@ from zoneinfo import ZoneInfo
 import reflex as rx
 
 from solariq.cache import (
-    DEFAULT_CALIBRATION_PATH,
-    DEFAULT_SOLAR_FORECAST_PATH,
-    DEFAULT_STRATEGY_PATH,
-    DEFAULT_TODAY_PATH,
-    DEFAULT_TODAY_RATES_PATH,
+    get_cache_paths,
     load_calibration,
     load_solar_forecast_today,
     load_strategy,
@@ -327,6 +323,18 @@ class AppState(rx.State):
         except Exception:
             return "unknown"
 
+    @rx.var
+    def calibration_computed_at_local(self) -> str:
+        """calibration_computed_at formatted in the configured local timezone."""
+        if not self.calibration_computed_at:
+            return ""
+        try:
+            tz = ZoneInfo(_get_config().app.timezone)
+            dt = datetime.fromisoformat(self.calibration_computed_at).astimezone(tz)
+            return dt.strftime("%d %b %Y %H:%M")
+        except Exception:
+            return self.calibration_computed_at
+
     @rx.event
     def set_page(self, page: str):
         self.current_page = page
@@ -570,7 +578,7 @@ class AppState(rx.State):
     def clear_cache(self):
         from pathlib import Path
         cleared = []
-        for path in (DEFAULT_TODAY_PATH, DEFAULT_STRATEGY_PATH, DEFAULT_SOLAR_FORECAST_PATH, DEFAULT_CALIBRATION_PATH, DEFAULT_TODAY_RATES_PATH):
+        for path in get_cache_paths():
             p = Path(path)
             if p.exists():
                 p.unlink()
