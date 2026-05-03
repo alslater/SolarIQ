@@ -138,6 +138,8 @@ def history_tab() -> rx.Component:
                     stat_card("Grid Export", rx.text(f"{AppState.history_grid_export_kwh} kWh")),
                     stat_card("Grid Cost", rx.text(AppState.history_grid_cost_str)),
                     stat_card("Export Revenue", rx.text(AppState.history_grid_export_revenue_str)),
+                    stat_card("Solar Saving", rx.text(AppState.history_solar_saving_str)),
+                    stat_card("Battery Peak Saving", rx.text(AppState.history_battery_peak_saving_str)),
                     stat_card("Net Period Cost", rx.text(AppState.history_net_period_cost_str), "incl. standing charge"),
                     spacing="3",
                     wrap="wrap",

@@ -256,7 +256,8 @@ def get_historical_range_data(
         database=config.influxdb.solax_database,
     )
     result = client.query(
-        f"SELECT MEAN(pvpower) AS pvpower, MEAN(power_in) AS power_in, MEAN(power_out) AS power_out "
+        f"SELECT MEAN(pvpower) AS pvpower, MEAN(power_in) AS power_in, "
+        f"MEAN(power_out) AS power_out, MEAN(battery_power) AS battery_power "
         f"FROM solaxdata "
         f"WHERE time >= '{from_utc}' AND time <= '{to_utc}' "
         f"GROUP BY time(30m) fill(none)"
@@ -278,6 +279,7 @@ def get_historical_range_data(
         solar_kwh = float(point.get("pvpower") or 0.0) * 0.5
         import_kwh = float(point.get("power_in") or 0.0) * 0.5
         export_kwh = float(point.get("power_out") or 0.0) * 0.5
+        battery_power_kw = float(point.get("battery_power") or 0.0)
         slot = (t_local.hour * 60 + t_local.minute) // 30
 
         key = (d, t_local.hour) if use_hourly else (d,)
@@ -286,7 +288,7 @@ def get_historical_range_data(
         energy_buckets[key]["solar_kwh"] += solar_kwh
         energy_buckets[key]["grid_import_kwh"] += import_kwh
         energy_buckets[key]["grid_export_kwh"] += export_kwh
-        slot_entries.append((d, slot, import_kwh, export_kwh))
+        slot_entries.append((d, slot, import_kwh, export_kwh, solar_kwh, battery_power_kw))
 
     # Fetch agile import and export rates from energy.electricity
     import_rate_map: dict[tuple[date, int], float] = {}
@@ -314,13 +316,24 @@ def get_historical_range_data(
     except Exception as exc:
         logger.warning("agile rate query failed for history: %s", exc)
 
-    # Compute import cost and export revenue per bucket
+    # Compute import cost, export revenue, solar saving, and battery peak saving per bucket
     cost_buckets: dict[tuple, float] = {}
     revenue_buckets: dict[tuple, float] = {}
-    for d, slot, import_kwh, export_kwh in slot_entries:
+    solar_saving_buckets: dict[tuple, float] = {}
+    battery_peak_saving_buckets: dict[tuple, float] = {}
+    for d, slot, import_kwh, export_kwh, solar_kwh, battery_power_kw in slot_entries:
         key = (d, slot // 2) if use_hourly else (d,)
         cost_buckets[key] = cost_buckets.get(key, 0.0) + import_kwh * import_rate_map.get((d, slot), 0.0)
         revenue_buckets[key] = revenue_buckets.get(key, 0.0) + export_kwh * export_rate_map.get((d, slot), 0.0)
+        solar_saving_buckets[key] = solar_saving_buckets.get(key, 0.0) + solar_kwh * import_rate_map.get((d, slot), 0.0)
+        local_hour = slot // 2
+        if 16 <= local_hour <= 18:
+            battery_discharge_kwh = max(0.0, -battery_power_kw) * 0.5
+            battery_to_load_kwh = max(0.0, battery_discharge_kwh - export_kwh)
+            battery_peak_saving_buckets[key] = (
+                battery_peak_saving_buckets.get(key, 0.0)
+                + battery_to_load_kwh * import_rate_map.get((d, slot), 0.0)
+            )
 
     # Build output rows covering every bucket in the range
     prec = 3 if use_hourly else 2
@@ -339,6 +352,8 @@ def get_historical_range_data(
                     "grid_export_kwh": round(bucket["grid_export_kwh"], prec),
                     "grid_cost_gbp": round(cost_buckets.get(key, 0.0) / 100, prec),
                     "grid_export_revenue_gbp": round(revenue_buckets.get(key, 0.0) / 100, prec),
+                    "solar_saving_gbp": round(solar_saving_buckets.get(key, 0.0) / 100, prec),
+                    "battery_peak_saving_gbp": round(battery_peak_saving_buckets.get(key, 0.0) / 100, prec),
                 })
         else:
             key = (cursor,)
@@ -350,6 +365,8 @@ def get_historical_range_data(
                 "grid_export_kwh": round(bucket["grid_export_kwh"], prec),
                 "grid_cost_gbp": round(cost_buckets.get(key, 0.0) / 100, prec),
                 "grid_export_revenue_gbp": round(revenue_buckets.get(key, 0.0) / 100, prec),
+                "solar_saving_gbp": round(solar_saving_buckets.get(key, 0.0) / 100, prec),
+                "battery_peak_saving_gbp": round(battery_peak_saving_buckets.get(key, 0.0) / 100, prec),
             })
         cursor += timedelta(days=1)
 
