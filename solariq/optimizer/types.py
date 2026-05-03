@@ -41,6 +41,7 @@ class OptimizationResult:
     battery_soc_forecast: list[float]       # 48 values, kWh
     grid_import_forecast: list[float]       # 48 values, kWh
     charge_mode_slots: list[bool]           # 48 values
+    solar_forecast_estimated: bool = False  # True when Solcast unavailable and zeros were used
 
     def to_dict(self) -> dict:
         return {
@@ -57,6 +58,7 @@ class OptimizationResult:
             "battery_soc_forecast": self.battery_soc_forecast,
             "grid_import_forecast": self.grid_import_forecast,
             "charge_mode_slots": self.charge_mode_slots,
+            "solar_forecast_estimated": self.solar_forecast_estimated,
         }
 
     @classmethod
@@ -79,6 +81,7 @@ class OptimizationResult:
             battery_soc_forecast=d["battery_soc_forecast"],
             grid_import_forecast=d["grid_import_forecast"],
             charge_mode_slots=d["charge_mode_slots"],
+            solar_forecast_estimated=d.get("solar_forecast_estimated", False),
         )
 
 

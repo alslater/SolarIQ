@@ -76,6 +76,7 @@ class AppState(rx.State):
     strategy_target_date: str = ""
     strategy_loading: bool = False
     strategy_error: str = ""
+    strategy_solar_estimated: bool = False
 
     # Tomorrow charts
     tomorrow_price_data: list[dict] = []
@@ -592,6 +593,7 @@ class AppState(rx.State):
         self.grid_import_kwh = round(result.grid_import_kwh, 1)
         self.strategy_computed_at = result.computed_at
         self.strategy_target_date = result.target_date
+        self.strategy_solar_estimated = result.solar_forecast_estimated
 
         timestamps = [
             f"{(t * 30) // 60:02d}:{(t * 30) % 60:02d}" for t in range(48)

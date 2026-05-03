@@ -185,11 +185,18 @@ def _maybe_refresh_strategy() -> None:
     try:
         agile = fetch_agile_prices(config, target)
         export = fetch_export_prices(config, target)
-        solar = fetch_solar_forecast(config, target)
+        solar_estimated = False
+        try:
+            solar = fetch_solar_forecast(config, target)
+        except Exception as exc:
+            logger.warning("Solcast unavailable, using zero solar forecast for strategy: %s", exc)
+            solar = [0.0] * 48
+            solar_estimated = True
         load = build_load_profile(config, target)
         today_data = get_today_live_data(config)
         initial_soc = today_data.battery_soc_kwh or (config.battery.capacity_kwh * 0.5)
         result = solve(agile, export, solar, load, initial_soc, config, target.isoformat())
+        result.solar_forecast_estimated = solar_estimated
         save_strategy(result)
         logger.info("strategy saved for %s, estimated cost £%.2f", target, result.estimated_cost_gbp)
     except Exception as exc:

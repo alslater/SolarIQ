@@ -73,6 +73,24 @@ def tomorrow_tab() -> rx.Component:
             ),
             rx.fragment(),
         ),
+        # Solar forecast warning
+        rx.cond(
+            AppState.strategy_solar_estimated,
+            rx.box(
+                rx.text(
+                    "⚠ Solar forecast unavailable — strategy computed with zero solar. Cost estimate will be conservative.",
+                    style={"font_size": "13px", "color": "#f59e0b"},
+                ),
+                style={
+                    **t.CARD_STYLE,
+                    "background": "#1a1200",
+                    "border_color": "#f59e0b",
+                    "padding": "12px 16px",
+                    "margin_bottom": "16px",
+                },
+            ),
+            rx.fragment(),
+        ),
         # Loading indicator
         rx.cond(
             AppState.strategy_loading,
