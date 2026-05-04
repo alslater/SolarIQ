@@ -31,7 +31,15 @@ def _midnight_slot(window_start: datetime) -> int | None:
         tzinfo=window_start.tzinfo,
     ) + timedelta(days=1)
     delta_seconds = (midnight - window_start).total_seconds()
-    slot = int(round(delta_seconds / 1800))
+    # window_start is always snapped to a 30-minute boundary, so delta_seconds
+    # should be an exact multiple of 1800.  Guard against DST transitions that
+    # could shift the wall-clock offset by a non-slot-aligned amount: if the
+    # remainder is non-zero, midnight doesn't fall on a slot boundary and we
+    # cannot safely split there.
+    remainder = delta_seconds % 1800
+    if remainder != 0:
+        return None
+    slot = int(delta_seconds // 1800)
     if 1 <= slot <= SLOTS - 1:
         return slot
     return None

@@ -157,7 +157,7 @@ def settings_tab() -> rx.Component:
                     on_change=AppState.set_current_password,
                     type="password",
                     placeholder="Current password",
-                    name="current-password",
+                    name="password",
                     custom_attrs={"autocomplete": "current-password"},
                     style={
                         "width": "100%",
@@ -207,7 +207,7 @@ def settings_tab() -> rx.Component:
                     on_change=AppState.set_new_password_confirm,
                     type="password",
                     placeholder="Confirm new password",
-                    name="confirm-new-password",
+                    name="confirm-password",
                     custom_attrs={"autocomplete": "new-password"},
                     style={
                         "width": "100%",

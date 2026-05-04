@@ -16,7 +16,7 @@
     * Delete TOU
     * Apply TOU
 
-4. On strategy page highlight non-considered slots or don't show them.
+4. On strategy page highlight non-considered slots or don't show them.  Not sure this is an issue any more now we have a rolling 48 slot strategy.
 
 5. On strategy page, provide some way of dismissing errors.
 

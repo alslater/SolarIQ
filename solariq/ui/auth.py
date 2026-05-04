@@ -77,7 +77,7 @@ def login_view() -> rx.Component:
                     AppState.set_login_password,
                     password=True,
                     autocomplete="current-password",
-                    name="current-password",
+                    name="password",
                 ),
                 rx.cond(
                     AppState.auth_error != "",
@@ -139,21 +139,21 @@ def bootstrap_view() -> rx.Component:
                     value=AppState.setup_username,
                     placeholder="admin",
                     autocomplete="off",
-                    name="new-username",
+                    name="username",
                 ),
                 _field(
                     "Password",
                     AppState.set_setup_password,
                     password=True,
                     autocomplete="off",
-                    name="new-password",
+                    name="password",
                 ),
                 _field(
                     "Confirm password",
                     AppState.set_setup_password_confirm,
                     password=True,
                     autocomplete="off",
-                    name="confirm-new-password",
+                    name="confirm-password",
                 ),
                 rx.cond(
                     AppState.auth_error != "",
