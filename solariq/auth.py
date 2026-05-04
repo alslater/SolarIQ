@@ -111,6 +111,10 @@ def _hash_password(password: str, salt: bytes) -> str:
     return hashed.hex()
 
 
+def _hash_session_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
 def _lockout_cutoff(now: datetime | None = None) -> str:
     current = now or _utcnow()
     return (current - timedelta(minutes=LOGIN_LOCKOUT_MINUTES)).isoformat()
@@ -259,6 +263,7 @@ def authenticate_user(db_path: str, username: str, password: str) -> UserRecord 
 def create_session(db_path: str, user_id: int, *, ttl_days: int = SESSION_TTL_DAYS) -> str:
     now = _utcnow()
     token = secrets.token_urlsafe(32)
+    token_hash = _hash_session_token(token)
     expires_at = (now + timedelta(days=ttl_days)).isoformat()
     with _connect(db_path) as conn:
         conn.execute(
@@ -266,7 +271,7 @@ def create_session(db_path: str, user_id: int, *, ttl_days: int = SESSION_TTL_DA
             INSERT INTO sessions (token, user_id, created_at, last_seen_at, expires_at)
             VALUES (?, ?, ?, ?, ?)
             """,
-            (token, user_id, now.isoformat(), now.isoformat(), expires_at),
+            (token_hash, user_id, now.isoformat(), now.isoformat(), expires_at),
         )
     return token
 
@@ -279,6 +284,7 @@ def get_session_user(db_path: str, token: str, *, ttl_days: int = SESSION_TTL_DA
     if not token:
         return None
 
+    token_hash = _hash_session_token(token)
     now = _utcnow()
     expires_at = (now + timedelta(days=ttl_days)).isoformat()
 
@@ -291,14 +297,28 @@ def get_session_user(db_path: str, token: str, *, ttl_days: int = SESSION_TTL_DA
             JOIN users u ON u.id = s.user_id
             WHERE s.token = ?
             """,
-            (token,),
+            (token_hash,),
         ).fetchone()
+
         if row is None:
-            return None
+            # Backward compatibility: migrate any legacy plaintext token row on read.
+            row = conn.execute(
+                """
+                SELECT u.id, u.username, u.is_admin
+                FROM sessions s
+                JOIN users u ON u.id = s.user_id
+                WHERE s.token = ?
+                """,
+                (token,),
+            ).fetchone()
+            if row is None:
+                return None
+
+            conn.execute("UPDATE sessions SET token = ? WHERE token = ?", (token_hash, token))
 
         conn.execute(
             "UPDATE sessions SET last_seen_at = ?, expires_at = ? WHERE token = ?",
-            (now.isoformat(), expires_at, token),
+            (now.isoformat(), expires_at, token_hash),
         )
 
     return UserRecord(id=int(row["id"]), username=row["username"], is_admin=bool(row["is_admin"]))
@@ -307,8 +327,9 @@ def get_session_user(db_path: str, token: str, *, ttl_days: int = SESSION_TTL_DA
 def invalidate_session(db_path: str, token: str) -> None:
     if not token:
         return
+    token_hash = _hash_session_token(token)
     with _connect(db_path) as conn:
-        conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
+        conn.execute("DELETE FROM sessions WHERE token IN (?, ?)", (token_hash, token))
 
 
 def list_users(db_path: str) -> list[str]:

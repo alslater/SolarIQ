@@ -1,4 +1,5 @@
 from pathlib import Path
+import hashlib
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
@@ -74,6 +75,51 @@ def test_authenticate_and_session_round_trip(tmp_path):
 
     invalidate_session(db_path, token)
     assert get_session_user(db_path, token) is None
+
+
+def test_session_token_is_hashed_at_rest(tmp_path):
+    db_path = _db_path(tmp_path)
+    init_auth_db(db_path)
+    user = create_user(db_path, "alice", "strong-pass-1")
+
+    token = create_session(db_path, user.id)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute("SELECT token FROM sessions").fetchone()
+
+    assert row is not None
+    assert row[0] == token_hash
+    assert row[0] != token
+
+
+def test_legacy_plaintext_session_token_is_migrated_on_read(tmp_path):
+    db_path = _db_path(tmp_path)
+    init_auth_db(db_path)
+    user = create_user(db_path, "alice", "strong-pass-1")
+
+    legacy_token = "legacy-plaintext-token"
+    now = datetime(2026, 5, 4, 12, 0, tzinfo=timezone.utc)
+    expires_at = (now + timedelta(days=30)).isoformat()
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO sessions (token, user_id, created_at, last_seen_at, expires_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (legacy_token, user.id, now.isoformat(), now.isoformat(), expires_at),
+        )
+
+    session_user = get_session_user(db_path, legacy_token)
+    assert session_user is not None
+    assert session_user.username == "alice"
+
+    expected_hash = hashlib.sha256(legacy_token.encode("utf-8")).hexdigest()
+    with sqlite3.connect(db_path) as conn:
+        stored = conn.execute("SELECT token FROM sessions").fetchall()
+
+    assert stored == [(expected_hash,)]
 
 
 def test_admin_can_create_and_delete_users(tmp_path):

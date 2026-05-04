@@ -1,3 +1,5 @@
+import logging
+
 import reflex as rx
 
 from solariq.auth import (
@@ -30,6 +32,7 @@ def _auth_cookie_secure_flag() -> bool:
 
 
 AUTH_COOKIE_SECURE = _auth_cookie_secure_flag()
+logger = logging.getLogger(__name__)
 
 
 class AuthState(rx.State):
@@ -38,7 +41,6 @@ class AuthState(rx.State):
         name="solariq_auth_token",
         path="/",
         max_age=60 * 60 * 24 * 30,
-        http_only=True,
         secure=AUTH_COOKIE_SECURE,
         same_site="lax",
     )
@@ -129,7 +131,8 @@ class AuthState(rx.State):
 
             return self._post_auth_success_events()
         except Exception as exc:
-            self.auth_error = f"Authentication failed to initialize: {exc}"
+            logger.exception("Authentication failed during login initialization: %s", exc)
+            self.auth_error = "Authentication failed to initialize; check server logs."
             return
 
     def _create_initial_user_impl(self):
@@ -164,7 +167,8 @@ class AuthState(rx.State):
 
             return self._post_auth_success_events()
         except Exception as exc:
-            self.auth_error = f"Authentication failed to initialize: {exc}"
+            logger.exception("Authentication failed during initial user setup: %s", exc)
+            self.auth_error = "Authentication failed to initialize; check server logs."
             return
 
     def _on_load_impl(self):
@@ -204,7 +208,8 @@ class AuthState(rx.State):
             self.current_user = ""
             self.current_user_is_admin = False
             self.auth_token = ""
-            self.auth_error = f"Authentication startup error: {exc}"
+            logger.exception("Authentication startup failed: %s", exc)
+            self.auth_error = "Authentication failed to initialize; check server logs."
             return
 
     def _clear_auth_feedback(self) -> None:
