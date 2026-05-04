@@ -100,9 +100,10 @@ Each plan period is one of:
 ### Period consolidation
 
 1. Contiguous slots are merged into plan periods.
-2. Self Use periods at 10% Min SOC are treated as **default/implicit** blocks.
-3. Self Use periods above 10% Min SOC are treated as **explicit** blocks.
-4. If explicit blocks exceed 10 (the SolaX maximum), the smallest Charge blocks are merged with neighbours until the explicit count fits.
-5. Each Charge period specifies a **target SOC %** (rounded to the nearest 5 %) calculated from the battery SOC forecast at the end of that period.
+2. **Midnight split** — any block that would cross the calendar day boundary (23:xx → 00:xx) is split into two periods at `00:00`. This is a hard inverter constraint: a single TOU period cannot span midnight, so a charge window such as 23:00→01:00 must be entered as two separate periods: 23:00→00:00 and 00:00→01:00.
+3. Self Use periods at 10% Min SOC are treated as **default/implicit** blocks.
+4. Self Use periods above 10% Min SOC are treated as **explicit** blocks.
+5. If explicit blocks exceed 10 (the SolaX maximum), the smallest Charge blocks are merged with neighbours until the explicit count fits.
+6. Each Charge period specifies a **target SOC %** (rounded to the nearest 5 %) calculated from the battery SOC forecast at the end of that period.
 
-The resulting schedule is displayed in the Charging Strategy page and must be keyed into the SolaX web app manually each evening.
+The resulting schedule is displayed in the Charging Strategy page and must be keyed into the SolaX web app manually each evening. Use the **By Start Time** sort toggle to reorder rows chronologically — the natural order to enter them into the inverter.

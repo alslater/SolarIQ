@@ -19,6 +19,24 @@ def _round_to_nearest_5(value: float) -> int:
     return round(value / 5) * 5
 
 
+def _midnight_slot(window_start: datetime) -> int | None:
+    """Return the slot index where the next calendar midnight falls within the window.
+
+    Returns None if midnight does not fall within slots [1, SLOTS-1] (e.g. window
+    starts exactly at midnight, or midnight is beyond the 48-slot horizon).
+    """
+    ws_date = window_start.date()
+    midnight = datetime(
+        ws_date.year, ws_date.month, ws_date.day,
+        tzinfo=window_start.tzinfo,
+    ) + timedelta(days=1)
+    delta_seconds = (midnight - window_start).total_seconds()
+    slot = int(round(delta_seconds / 1800))
+    if 1 <= slot <= SLOTS - 1:
+        return slot
+    return None
+
+
 def build_rolling_window(
     today: list[float],
     tomorrow: list[float],
@@ -81,6 +99,21 @@ def build_strategy_periods(
             current_mode = charge_mode_slots[t]
             block_start = t
     blocks.append([block_start, SLOTS, current_mode])
+
+    # Split any block that spans midnight so no period crosses 23:xx → 00:xx.
+    # Inverters cannot represent a single period that straddles the day boundary.
+    if window_start is not None:
+        mid_slot = _midnight_slot(window_start)
+        if mid_slot is not None:
+            split: list[list] = []
+            for block in blocks:
+                bstart, bend, bmode = block
+                if bstart < mid_slot < bend:
+                    split.append([bstart, mid_slot, bmode])
+                    split.append([mid_slot, bend, bmode])
+                else:
+                    split.append(block)
+            blocks = split
 
     def _self_use_min_soc_pct(start: int, end: int) -> int:
         min_soc_kwh = min(battery_soc_forecast[t] for t in range(start, end))

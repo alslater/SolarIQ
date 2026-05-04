@@ -157,6 +157,8 @@ def settings_tab() -> rx.Component:
                     on_change=AppState.set_current_password,
                     type="password",
                     placeholder="Current password",
+                    name="current-password",
+                    custom_attrs={"autocomplete": "current-password"},
                     style={
                         "width": "100%",
                         "max_width": "420px",
@@ -180,6 +182,8 @@ def settings_tab() -> rx.Component:
                     on_change=AppState.set_new_password,
                     type="password",
                     placeholder="New password",
+                    name="new-password",
+                    custom_attrs={"autocomplete": "new-password"},
                     style={
                         "width": "100%",
                         "max_width": "420px",
@@ -203,6 +207,8 @@ def settings_tab() -> rx.Component:
                     on_change=AppState.set_new_password_confirm,
                     type="password",
                     placeholder="Confirm new password",
+                    name="confirm-new-password",
+                    custom_attrs={"autocomplete": "new-password"},
                     style={
                         "width": "100%",
                         "max_width": "420px",
@@ -296,6 +302,8 @@ def settings_tab() -> rx.Component:
                         value=AppState.new_user_username,
                         on_change=AppState.set_new_user_username,
                         placeholder="Username",
+                        name="managed-username",
+                        custom_attrs={"autocomplete": "off"},
                         style={
                             "width": "100%",
                             "max_width": "420px",
@@ -319,6 +327,8 @@ def settings_tab() -> rx.Component:
                         on_change=AppState.set_new_user_password,
                         type="password",
                         placeholder="Password",
+                        name="managed-new-password",
+                        custom_attrs={"autocomplete": "new-password"},
                         style={
                             "width": "100%",
                             "max_width": "420px",
@@ -342,6 +352,8 @@ def settings_tab() -> rx.Component:
                         on_change=AppState.set_new_user_password_confirm,
                         type="password",
                         placeholder="Confirm password",
+                        name="managed-confirm-password",
+                        custom_attrs={"autocomplete": "new-password"},
                         style={
                             "width": "100%",
                             "max_width": "420px",
