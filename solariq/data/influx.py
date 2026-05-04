@@ -234,7 +234,7 @@ def get_historical_range_data(
     """Return per-bucket energy data for start_date..end_date inclusive.
 
     Buckets are hourly for ranges ≤7 days, daily otherwise.
-    Each row: {date, solar_kwh, grid_import_kwh, grid_export_kwh, grid_cost_gbp, grid_export_revenue_gbp}
+    Each row: {date, solar_kwh, predicted_solar_kwh, grid_import_kwh, grid_export_kwh, grid_cost_gbp, grid_export_revenue_gbp}
     """
     from datetime import timedelta
 
@@ -335,6 +335,31 @@ def get_historical_range_data(
                 + battery_to_load_kwh * import_rate_map.get((d, slot), 0.0)
             )
 
+    # Fetch Solcast forecast from forecast database and aggregate to same buckets
+    predicted_solar_buckets: dict[tuple, float] = {}
+    solcast_client = InfluxDBClient(
+        host=config.influxdb.host,
+        port=config.influxdb.port,
+        database=config.influxdb.solcast_forecast_database,
+    )
+    try:
+        forecast_result = solcast_client.query(
+            f"SELECT pv_estimate_kwh "
+            f"FROM solar_forecast "
+            f"WHERE time >= '{from_utc}' AND time <= '{to_utc}' "
+            f"ORDER BY time ASC"
+        )
+        for point in forecast_result.get_points():
+            t_utc = datetime.fromisoformat(point["time"].replace("Z", "+00:00"))
+            t_local = t_utc.astimezone(tz)
+            d = t_local.date()
+            if d < start_date or d > end_date:
+                continue
+            key = (d, t_local.hour) if use_hourly else (d,)
+            predicted_solar_buckets[key] = predicted_solar_buckets.get(key, 0.0) + float(point.get("pv_estimate_kwh") or 0.0)
+    except Exception as exc:
+        logger.warning("solcast forecast query failed for history: %s", exc)
+
     # Build output rows covering every bucket in the range
     prec = 3 if use_hourly else 2
     rows = []
@@ -348,6 +373,7 @@ def get_historical_range_data(
                 rows.append({
                     "date": label,
                     "solar_kwh": round(bucket["solar_kwh"], prec),
+                    "predicted_solar_kwh": round(predicted_solar_buckets.get(key, 0.0), prec),
                     "grid_import_kwh": round(bucket["grid_import_kwh"], prec),
                     "grid_export_kwh": round(bucket["grid_export_kwh"], prec),
                     "grid_cost_gbp": round(cost_buckets.get(key, 0.0) / 100, prec),
@@ -361,6 +387,7 @@ def get_historical_range_data(
             rows.append({
                 "date": cursor.strftime("%d %b"),
                 "solar_kwh": round(bucket["solar_kwh"], prec),
+                "predicted_solar_kwh": round(predicted_solar_buckets.get(key, 0.0), prec),
                 "grid_import_kwh": round(bucket["grid_import_kwh"], prec),
                 "grid_export_kwh": round(bucket["grid_export_kwh"], prec),
                 "grid_cost_gbp": round(cost_buckets.get(key, 0.0) / 100, prec),

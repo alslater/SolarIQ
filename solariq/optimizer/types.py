@@ -12,6 +12,7 @@ class StrategyPeriod:
     target_soc_pct: int = 0                  # Charge only
     max_charge_w: int = 0                    # Charge only
     avg_price_p: float = 0.0                 # average Agile price over this period
+    is_default: bool = False                 # True when this uses inverter default (Self Use 10%)
 
     def to_dict(self) -> dict:
         return {
@@ -23,6 +24,7 @@ class StrategyPeriod:
             "target_soc_pct": self.target_soc_pct,
             "max_charge_w": self.max_charge_w,
             "avg_price_p": round(self.avg_price_p, 2),
+            "is_default": self.is_default,
         }
 
 
@@ -32,8 +34,9 @@ class OptimizationResult:
     estimated_cost_gbp: float
     solar_forecast_kwh: float
     grid_import_kwh: float
-    computed_at: str                         # ISO8601
-    target_date: str                         # YYYY-MM-DD
+    computed_at: str                         # ISO8601 UTC
+    valid_until: str                         # ISO8601 local datetime when window expires
+    window_start: str                        # ISO8601 local datetime of slot 0
     agile_prices: list[float]               # 48 values, p/kWh
     export_prices: list[float]              # 48 values, p/kWh
     solar_forecast: list[float]             # 48 values, kWh/slot
@@ -50,7 +53,8 @@ class OptimizationResult:
             "solar_forecast_kwh": self.solar_forecast_kwh,
             "grid_import_kwh": self.grid_import_kwh,
             "computed_at": self.computed_at,
-            "target_date": self.target_date,
+            "valid_until": self.valid_until,
+            "window_start": self.window_start,
             "agile_prices": self.agile_prices,
             "export_prices": self.export_prices,
             "solar_forecast": self.solar_forecast,
@@ -73,7 +77,8 @@ class OptimizationResult:
             solar_forecast_kwh=d["solar_forecast_kwh"],
             grid_import_kwh=d["grid_import_kwh"],
             computed_at=d["computed_at"],
-            target_date=d["target_date"],
+            valid_until=d.get("valid_until", d.get("target_date", "")),
+            window_start=d.get("window_start", ""),
             agile_prices=d["agile_prices"],
             export_prices=d["export_prices"],
             solar_forecast=d["solar_forecast"],

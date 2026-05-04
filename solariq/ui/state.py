@@ -18,7 +18,7 @@ from solariq.config import load_config, SolarIQConfig
 from solariq.logging_config import setup_logging
 from solariq.data.influx import get_today_live_data, get_historical_range_data, get_latest_inverter_stats
 from solariq.data.load_profile import build_load_profile
-from solariq.data.octopus import fetch_agile_prices, fetch_export_prices, fetch_standing_charge_p_per_day, fetch_total_standing_charge_gbp
+from solariq.data.octopus import fetch_agile_prices, fetch_export_prices, fetch_standing_charge_p_per_day, fetch_total_standing_charge_gbp, fill_unpublished_slots
 from solariq.data.solcast import fetch_solar_forecast
 from solariq.data.weather import fetch_today_weather
 from solariq.optimizer.solver import solve
@@ -39,28 +39,10 @@ def _tomorrow(config: SolarIQConfig) -> date:
     return (datetime.now(tz) + timedelta(days=1)).date()
 
 
-def _after_refresh_time(config: SolarIQConfig) -> bool:
-    """Return True only if the current local time is at or past the configured refresh_time.
-    Octopus Agile prices for tomorrow are not published until ~16:00.
-    There is no point attempting a strategy calculation before that time."""
-    tz = ZoneInfo(config.app.timezone)
-    now = datetime.now(tz)
-    refresh_h, refresh_m = (int(x) for x in config.app.refresh_time.split(":"))
-    refresh_time = now.replace(hour=refresh_h, minute=refresh_m, second=0, microsecond=0)
-    return now >= refresh_time
-
-
-def _should_refresh_strategy(cached_target: str | None, config: SolarIQConfig) -> bool:
-    """Return True if we should fetch+compute a fresh strategy.
-
-    Conditions:
-    - Current time must be at or after configured refresh_time (default 16:15)
-    - Cached strategy must not already be for tomorrow's date
-    """
-    if not _after_refresh_time(config):
-        return False
-    tomorrow_str = _tomorrow(config).isoformat()
-    return cached_target != tomorrow_str
+def _prices_published(agile_tomorrow: list[float]) -> bool:
+    """Return True if tomorrow's Agile prices are published (not all at cap)."""
+    from solariq.data.octopus import UNPUBLISHED_RATE_CAP_P
+    return not all(p >= UNPUBLISHED_RATE_CAP_P for p in agile_tomorrow)
 
 
 class AppState(rx.State):
@@ -73,10 +55,13 @@ class AppState(rx.State):
     solar_forecast_kwh: float = 0.0
     grid_import_kwh: float = 0.0
     strategy_computed_at: str = ""
-    strategy_target_date: str = ""
+    strategy_valid_until: str = ""
     strategy_loading: bool = False
     strategy_error: str = ""
     strategy_solar_estimated: bool = False
+    show_self_use_implicit: bool = True
+    show_self_use_explicit: bool = True
+    show_charge: bool = True
 
     # Tomorrow charts
     tomorrow_price_data: list[dict] = []
@@ -604,21 +589,102 @@ class AppState(rx.State):
         self.solar_forecast_kwh = round(result.solar_forecast_kwh, 1)
         self.grid_import_kwh = round(result.grid_import_kwh, 1)
         self.strategy_computed_at = result.computed_at
-        self.strategy_target_date = result.target_date
+        self.strategy_valid_until = result.valid_until
         self.strategy_solar_estimated = result.solar_forecast_estimated
 
-        timestamps = [
-            f"{(t * 30) // 60:02d}:{(t * 30) % 60:02d}" for t in range(48)
-        ]
-        self.tomorrow_price_data = [
-            {"time": timestamps[t], "price": result.agile_prices[t], "charge": result.charge_mode_slots[t]}
-            for t in range(48)
-        ]
+        if result.window_start:
+            ws = datetime.fromisoformat(result.window_start)
+            timestamps = [
+                (ws + timedelta(minutes=t * 30)).strftime("%H:%M")
+                for t in range(48)
+            ]
+        else:
+            timestamps = [
+                f"{(t * 30) // 60:02d}:{(t * 30) % 60:02d}" for t in range(48)
+            ]
+
+        # Build a per-slot mode label from periods so chart bars can be annotated by mode.
+        slot_modes = ["Self Use (Implicit)"] * 48
+        start_slots: list[int] = []
+        for period in result.periods:
+            try:
+                start_slots.append(timestamps.index(period.start_time))
+            except ValueError:
+                start_slots.append(0)
+        for i, period in enumerate(result.periods):
+            start = start_slots[i]
+            end = start_slots[i + 1] if i + 1 < len(start_slots) else 48
+            if period.mode == "Charge":
+                mode_label = "Charge"
+            elif period.is_default:
+                mode_label = "Self Use (Implicit)"
+            else:
+                mode_label = "Self Use (Explicit)"
+            for t in range(start, end):
+                slot_modes[t] = mode_label
+
+        self.tomorrow_price_data = []
+        for t in range(48):
+            mode_label = slot_modes[t]
+            price = result.agile_prices[t]
+            self.tomorrow_price_data.append(
+                {
+                    "time": timestamps[t],
+                    "price": price,
+                    "mode": mode_label,
+                    "price_charge": price if mode_label == "Charge" else 0.0,
+                    "price_self_use_explicit": price if mode_label == "Self Use (Explicit)" else 0.0,
+                    "price_self_use_implicit": price if mode_label == "Self Use (Implicit)" else 0.0,
+                }
+            )
         self.tomorrow_solar_data = [
             {"time": timestamps[t], "solar": result.solar_forecast[t], "soc_kwh": result.battery_soc_forecast[t]}
             for t in range(48)
         ]
 
+    @rx.var
+    def strategy_valid_until_str(self) -> str:
+        if not self.strategy_valid_until:
+            return ""
+        try:
+            dt = datetime.fromisoformat(self.strategy_valid_until)
+            return dt.strftime("%H:%M %d %b")
+        except ValueError:
+            return self.strategy_valid_until
+
+    @rx.var
+    def test_strategy_mode(self) -> bool:
+        return _get_config().app.test_strategy_mode
+
+    @rx.var
+    def filtered_strategy_periods(self) -> list[dict]:
+        filtered: list[dict] = []
+        for period in self.strategy_periods:
+            mode = period.get("mode")
+            if mode == "Charge":
+                if self.show_charge:
+                    filtered.append(period)
+                continue
+
+            if mode == "Self Use":
+                is_default = period.get("is_default", period.get("min_soc_pct", 10) <= 10)
+                if is_default and self.show_self_use_implicit:
+                    filtered.append(period)
+                if (not is_default) and self.show_self_use_explicit:
+                    filtered.append(period)
+        return filtered
+
+    @rx.event
+    def toggle_show_self_use_implicit(self):
+        self.show_self_use_implicit = not self.show_self_use_implicit
+
+    @rx.event
+    def toggle_show_self_use_explicit(self):
+        self.show_self_use_explicit = not self.show_self_use_explicit
+
+    @rx.event
+    def toggle_show_charge(self):
+        self.show_charge = not self.show_charge
     @rx.event(background=True)
     async def refresh_strategy(self):
         async with self:
@@ -626,36 +692,82 @@ class AppState(rx.State):
             self.strategy_error = ""
 
         config = _get_config()
-        target = _tomorrow(config)
+        tz = ZoneInfo(config.app.timezone)
+        tomorrow = _tomorrow(config)
+        today = datetime.now(tz).date()
 
-        if not _after_refresh_time(config):
+        try:
+            agile_tomorrow = await asyncio.to_thread(fetch_agile_prices, config, tomorrow)
+        except Exception as exc:
+            async with self:
+                self.strategy_error = f"Could not fetch tomorrow's prices: {exc}"
+                self.strategy_loading = False
+            return
+
+        if not config.app.test_strategy_mode and not _prices_published(agile_tomorrow):
             async with self:
                 self.strategy_loading = False
             yield rx.toast.warning(
-                "Tomorrow's Agile prices are not yet published — available after 16:00. Try again after 16:15.",
+                "Tomorrow's Agile prices aren't available yet — try after 16:00.",
                 duration=6000,
                 close_button=True,
             )
             return
 
         try:
-            agile = await asyncio.to_thread(fetch_agile_prices, config, target)
-            export = await asyncio.to_thread(fetch_export_prices, config, target)
-            solar = await asyncio.to_thread(fetch_solar_forecast, config, target)
-            load = await asyncio.to_thread(build_load_profile, config, target)
+            from solariq.data.influx import load_solar_forecast_influx, save_solar_forecast_influx
+            from solariq.optimizer.strategy import build_rolling_window, current_window_start
+
+            current_slot, window_start = current_window_start(config.app.timezone)
+
+            agile_today = await asyncio.to_thread(fetch_agile_prices, config, today)
+            export_today = await asyncio.to_thread(fetch_export_prices, config, today)
+            export_tomorrow = export_today if config.app.test_strategy_mode else await asyncio.to_thread(fetch_export_prices, config, tomorrow)
+
+            solar_today = await asyncio.to_thread(load_solar_forecast_influx, config, today) or [0.0] * 48
+            solar_tomorrow = await asyncio.to_thread(load_solar_forecast_influx, config, tomorrow)
+            solar_estimated = False
+            if solar_tomorrow is None:
+                try:
+                    solar_tomorrow = await asyncio.to_thread(fetch_solar_forecast, config, tomorrow)
+                    try:
+                        await asyncio.to_thread(save_solar_forecast_influx, config, solar_tomorrow, tomorrow)
+                    except Exception as exc:
+                        import logging as _log
+                        _log.getLogger(__name__).warning("failed to cache tomorrow's forecast: %s", exc)
+                except Exception:
+                    solar_tomorrow = [0.0] * 48
+                    solar_estimated = True
+
+            load_today = await asyncio.to_thread(build_load_profile, config, today)
+            load_tomorrow = await asyncio.to_thread(build_load_profile, config, tomorrow)
+
+            agile_for_today = fill_unpublished_slots(agile_today) if config.app.test_strategy_mode else agile_today
+            agile_for_tomorrow = fill_unpublished_slots(agile_today) if config.app.test_strategy_mode else agile_tomorrow
+            export_today_eff = fill_unpublished_slots(export_today) if config.app.test_strategy_mode else export_today
+            export_tomorrow_eff = fill_unpublished_slots(export_tomorrow) if config.app.test_strategy_mode else export_tomorrow
+            agile = build_rolling_window(agile_for_today, agile_for_tomorrow, current_slot)
+            export = build_rolling_window(export_today, export_tomorrow_eff, current_slot)
+            solar = build_rolling_window(solar_today, solar_tomorrow, current_slot)
+            load = build_rolling_window(load_today, load_tomorrow, current_slot)
+
             today_data = await asyncio.to_thread(get_today_live_data, config)
             initial_soc = today_data.battery_soc_kwh or (config.battery.capacity_kwh * 0.5)
 
             result = await asyncio.to_thread(
-                solve, agile, export, solar, load, initial_soc, config, target.isoformat()
+                solve, agile, export, solar, load, initial_soc, config, window_start
             )
+            result.solar_forecast_estimated = solar_estimated
             await asyncio.to_thread(save_strategy, result)
 
             async with self:
                 self._apply_strategy(result)
                 self.strategy_loading = False
+
+            valid_dt = datetime.fromisoformat(result.valid_until)
+            valid_str = valid_dt.strftime("%H:%M %d %b")
             yield rx.toast.success(
-                f"Strategy calculated for {result.target_date} — estimated cost £{result.estimated_cost_gbp:.2f}",
+                f"Strategy calculated — valid until {valid_str}, estimated cost £{result.estimated_cost_gbp:.2f}",
                 duration=0,
                 close_button=True,
             )
@@ -677,7 +789,7 @@ class AppState(rx.State):
         async with self:
             self.today_loading = True
 
-        last_strategy_target: str = self.strategy_target_date
+        last_strategy_valid_until: str = self.strategy_valid_until
         last_known_date: date | None = None
 
         while True:
@@ -817,12 +929,13 @@ class AppState(rx.State):
 
                 # Pick up strategy updates written by the worker without a separate loop
                 cached = await asyncio.to_thread(load_strategy)
-                if cached and cached.target_date != last_strategy_target:
-                    last_strategy_target = cached.target_date
+                if cached and cached.valid_until != last_strategy_valid_until:
+                    last_strategy_valid_until = cached.valid_until
                     async with self:
                         self._apply_strategy(cached)
+                    valid_str = datetime.fromisoformat(cached.valid_until).strftime("%H:%M %d %b")
                     yield rx.toast.success(
-                        f"Strategy calculated for {cached.target_date} — estimated cost £{cached.estimated_cost_gbp:.2f}",
+                        f"Strategy updated — valid until {valid_str}, estimated cost £{cached.estimated_cost_gbp:.2f}",
                         duration=0,
                         close_button=True,
                     )

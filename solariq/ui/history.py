@@ -187,6 +187,41 @@ def history_tab() -> rx.Component:
                     ),
                     style={**t.CARD_STYLE, "padding": "20px", "margin_bottom": "16px", "width": "100%"},
                 ),
+                # Solar actual vs predicted chart
+                rx.box(
+                    _section_heading("Solar: Actual vs Predicted PV (kWh)"),
+                    rx.recharts.composed_chart(
+                        rx.recharts.cartesian_grid(stroke_dasharray="3 3", stroke=t.CHART_GRID),
+                        rx.recharts.bar(
+                            data_key="solar_kwh",
+                            name="Actual Solar",
+                            fill=t.CHART_SOLAR,
+                            fill_opacity=0.8,
+                            radius=[2, 2, 0, 0],
+                        ),
+                        rx.recharts.line(
+                            data_key="predicted_solar_kwh",
+                            name="Predicted PV",
+                            stroke="#f59e0b",
+                            stroke_width=2,
+                            dot=False,
+                            stroke_dasharray="4 2",
+                        ),
+                        rx.recharts.x_axis(
+                            data_key="date",
+                            tick={"fill": t.CHART_MUTED, "fontSize": 10},
+                            interval="preserveStartEnd",
+                        ),
+                        rx.recharts.y_axis(tick={"fill": t.CHART_MUTED, "fontSize": 10}),
+                        rx.recharts.legend(),
+                        rx.recharts.tooltip(),
+                        data=AppState.history_chart_data,
+                        width="100%",
+                        height=240,
+                        bar_size=20,
+                    ),
+                    style={**t.CARD_STYLE, "padding": "20px", "margin_bottom": "16px", "width": "100%"},
+                ),
                 # Grid cost vs export revenue chart
                 rx.box(
                     _section_heading("Grid Cost vs Export Revenue (£)"),

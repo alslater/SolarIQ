@@ -51,6 +51,7 @@ class AppConfig:
     cache_dir: str = "cache"
     log_file: str = ""  # empty = stdout
     log_level: str = "INFO"
+    test_strategy_mode: bool = False  # substitute today's rates for tomorrow's when True
 
 
 @dataclass
@@ -106,6 +107,7 @@ def load_config(path: str = "solariq.ini") -> SolarIQConfig:
             cache_dir=parser.get("app", "cache_dir", fallback="cache"),
             log_file=parser.get("app", "log_file", fallback=""),
             log_level=parser.get("app", "log_level", fallback="INFO"),
+            test_strategy_mode=parser.getboolean("app", "test_strategy_mode", fallback=False),
         ),
         location=LocationConfig(
             latitude=parser.getfloat("location", "latitude", fallback=50.89),

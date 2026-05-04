@@ -84,6 +84,18 @@ def _rates_to_48_slots(results: list[dict], target_date: date, tz_name: str, fut
     return slots
 
 
+def fill_unpublished_slots(slots: list[float]) -> list[float]:
+    """Replace sentinel UNPUBLISHED_RATE_CAP_P values with the mean of published slots.
+
+    Used in test strategy mode so that future-today slots (not yet priced) don't
+    inflate the cost estimate or cause the optimizer to avoid those windows.
+    Falls back to 15.0 p/kWh if no published slots exist.
+    """
+    published = [s for s in slots if s < UNPUBLISHED_RATE_CAP_P]
+    fill = sum(published) / len(published) if published else 15.0
+    return [s if s < UNPUBLISHED_RATE_CAP_P else fill for s in slots]
+
+
 def fetch_agile_prices(config: SolarIQConfig, target_date: date) -> list[float]:
     logger.info("fetching agile import prices for %s", target_date)
     from_utc, to_utc = _date_to_utc_bounds(target_date, config.app.timezone)
