@@ -40,6 +40,7 @@ def test_app_config(test_ini_path):
     assert config.app.timezone == "Europe/London"
     assert config.app.refresh_time == "16:15"
     assert config.app.cache_dir == "test-cache"
+    assert config.app.auth_db_path == "data/auth.sqlite3"
 
 
 def test_missing_file_raises():

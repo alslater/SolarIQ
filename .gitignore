@@ -227,6 +227,7 @@ Pipfile
 # SolarIQ
 solariq.ini
 cache/
+data/
 .web/
 .superpowers/
 .claude/settings.local.json
@@ -234,3 +235,4 @@ requirements.txt
 superpowers/
 .python-version
 .worktrees/
+*.sqlite3

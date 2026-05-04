@@ -5,6 +5,7 @@ from solariq.ui.tomorrow import tomorrow_tab
 from solariq.ui.history import history_tab
 from solariq.ui.settings import settings_tab
 from solariq.ui.inverter import inverter_tab
+from solariq.ui.auth import auth_loading_view, bootstrap_view, login_view
 from solariq.ui import theme as t
 
 
@@ -72,6 +73,33 @@ def _sidebar() -> rx.Component:
             width="100%",
         ),
         rx.spacer(),
+        rx.box(
+            rx.vstack(
+                rx.text(
+                    AppState.current_user,
+                    style={"font_size": "12px", "font_weight": "600", "color": t.SIDEBAR_FG},
+                ),
+                rx.button(
+                    "Sign out",
+                    on_click=AppState.logout,
+                    style={
+                        "background": "transparent",
+                        "border": f"1px solid {t.BORDER}",
+                        "border_radius": "6px",
+                        "cursor": "pointer",
+                        "padding": "4px 10px",
+                        "font_size": "12px",
+                        "color": t.SIDEBAR_MUTED,
+                        "_hover": {"border_color": t.PRIMARY, "color": t.SIDEBAR_FG},
+                    },
+                ),
+                spacing="2",
+                align="start",
+            ),
+            padding="12px 20px",
+            border_top=f"1px solid {t.BORDER}",
+            width="100%",
+        ),
         # Colour mode toggle
         rx.box(
             rx.button(
@@ -106,41 +134,56 @@ def _sidebar() -> rx.Component:
 
 
 def index() -> rx.Component:
-    return rx.hstack(
-        _sidebar(),
-        rx.box(
+    return rx.box(
+        rx.cond(
+            AppState.auth_ready == False,
+            auth_loading_view(),
             rx.cond(
-                AppState.current_page == "today",
-                today_tab(),
+                AppState.needs_initial_user,
+                bootstrap_view(),
                 rx.cond(
-                    AppState.current_page == "tomorrow",
-                    tomorrow_tab(),
-                    rx.cond(
-                        AppState.current_page == "history",
-                        history_tab(),
-                        rx.cond(
-                            AppState.current_page == "inverter",
-                            inverter_tab(),
-                            settings_tab(),
+                    AppState.is_authenticated == False,
+                    login_view(),
+                    rx.hstack(
+                        _sidebar(),
+                        rx.box(
+                            rx.cond(
+                                AppState.current_page == "today",
+                                today_tab(),
+                                rx.cond(
+                                    AppState.current_page == "tomorrow",
+                                    tomorrow_tab(),
+                                    rx.cond(
+                                        AppState.current_page == "history",
+                                        history_tab(),
+                                        rx.cond(
+                                            AppState.current_page == "inverter",
+                                            inverter_tab(),
+                                            settings_tab(),
+                                        ),
+                                    ),
+                                ),
+                            ),
+                            style={
+                                "flex": "1",
+                                "min_height": "100vh",
+                                "overflow_y": "auto",
+                                "background": t.BG,
+                            },
                         ),
+                        align="start",
+                        spacing="0",
+                        style={
+                            "background": t.BG,
+                            "font_family": "Inter, system-ui, sans-serif",
+                            "min_height": "100vh",
+                        },
                     ),
                 ),
             ),
-            style={
-                "flex": "1",
-                "min_height": "100vh",
-                "overflow_y": "auto",
-                "background": t.BG,
-            },
         ),
-        align="start",
-        spacing="0",
-        style={
-            "background": t.BG,
-            "font_family": "Inter, system-ui, sans-serif",
-            "min_height": "100vh",
-        },
         on_mount=AppState.on_load,
+        style={"min_height": "100vh"},
     )
 
 

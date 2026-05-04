@@ -13,6 +13,7 @@ services:
     volumes:
       - ./config/solariq.ini:/app/solariq.ini:ro
       - ./cache:/app/cache
+      - ./data:/app/data
       - ./logs:/app/logs
 
   # ── Web ───────────────────────────────────────────────────────────────────────
@@ -37,4 +38,5 @@ services:
     volumes:
       - ./config/solariq.ini:/app/solariq.ini:ro
       - ./cache:/app/cache   # read-only in practice; worker owns writes
+      - ./data:/app/data
       - ./logs:/app/logs

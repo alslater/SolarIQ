@@ -2,6 +2,7 @@
 solariq.ini
 cache/
 logs/
+data/
 
 # Reflex build artefacts – regenerated inside the container
 .web/
