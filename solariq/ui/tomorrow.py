@@ -21,10 +21,10 @@ def _section_heading(text: str) -> rx.Component:
 def _last_updated_card() -> rx.Component:
     return rx.box(
         rx.text(
-            "Last Updated",
+            "Valid Until",
             style={"font_size": "11px", "font_weight": "500", "color": t.MUTED, "text_transform": "uppercase", "letter_spacing": "0.06em", "margin_bottom": "4px"},
         ),
-        rx.text(AppState.strategy_computed_at, style={"font_size": "13px", "color": t.FG, "margin_bottom": "10px"}),
+        rx.text(AppState.strategy_valid_until_str, style={"font_size": "13px", "color": t.FG, "margin_bottom": "10px"}),
         rx.button(
             "Recalculate",
             on_click=AppState.refresh_strategy,
@@ -91,6 +91,24 @@ def tomorrow_tab() -> rx.Component:
             ),
             rx.fragment(),
         ),
+        # Test mode warning
+        rx.cond(
+            AppState.test_strategy_mode,
+            rx.box(
+                rx.text(
+                    "⚠ Test strategy mode is enabled — tomorrow's rates are substituted with today's. Disable test_strategy_mode in solariq.ini for production use.",
+                    style={"font_size": "13px", "color": "#f59e0b"},
+                ),
+                style={
+                    **t.CARD_STYLE,
+                    "background": "#1a1200",
+                    "border_color": "#f59e0b",
+                    "padding": "12px 16px",
+                    "margin_bottom": "16px",
+                },
+            ),
+            rx.fragment(),
+        ),
         # Loading indicator
         rx.cond(
             AppState.strategy_loading,
@@ -108,7 +126,45 @@ def tomorrow_tab() -> rx.Component:
             AppState.strategy_periods,
             rx.box(
                 _section_heading("Charging Strategy"),
-                strategy_table(AppState.strategy_periods),
+                rx.hstack(
+                    rx.text(
+                        "Filter Rows:",
+                        style={
+                            "font_size": "11px",
+                            "font_weight": "600",
+                            "color": t.MUTED,
+                            "text_transform": "uppercase",
+                            "letter_spacing": "0.06em",
+                        },
+                    ),
+                    rx.button(
+                        "Self Use (Implicit)",
+                        on_click=AppState.toggle_show_self_use_implicit,
+                        size="1",
+                        variant=rx.cond(AppState.show_self_use_implicit, "solid", "soft"),
+                        style={"font_size": "11px", "cursor": "pointer"},
+                    ),
+                    rx.button(
+                        "Self Use (Explicit)",
+                        on_click=AppState.toggle_show_self_use_explicit,
+                        size="1",
+                        variant=rx.cond(AppState.show_self_use_explicit, "solid", "soft"),
+                        style={"font_size": "11px", "cursor": "pointer"},
+                    ),
+                    rx.button(
+                        "Charge",
+                        on_click=AppState.toggle_show_charge,
+                        size="1",
+                        variant=rx.cond(AppState.show_charge, "solid", "soft"),
+                        style={"font_size": "11px", "cursor": "pointer"},
+                    ),
+                    spacing="2",
+                    align="center",
+                    width="100%",
+                    wrap="wrap",
+                    margin_bottom="2",
+                ),
+                strategy_table(AppState.filtered_strategy_periods),
                 margin_bottom="4",
                 width="100%",
             ),
@@ -117,12 +173,33 @@ def tomorrow_tab() -> rx.Component:
         # Charts
         rx.grid(
             rx.box(
-                _section_heading("Agile Prices + Charge Windows (p/kWh)"),
+                _section_heading("Agile Prices by Planned Mode (p/kWh)"),
                 rx.recharts.bar_chart(
                     rx.recharts.cartesian_grid(stroke_dasharray="3 3", stroke=t.CHART_GRID),
-                    rx.recharts.bar(data_key="price", name="Price", fill=t.CHART_PRICE, radius=[2, 2, 0, 0]),
+                    rx.recharts.bar(
+                        data_key="price_self_use_implicit",
+                        name="Self Use (Implicit)",
+                        fill=t.CHART_EXPORT,
+                        radius=[2, 2, 0, 0],
+                        stack_id="price",
+                    ),
+                    rx.recharts.bar(
+                        data_key="price_self_use_explicit",
+                        name="Self Use (Explicit)",
+                        fill="#f59e0b",
+                        radius=[2, 2, 0, 0],
+                        stack_id="price",
+                    ),
+                    rx.recharts.bar(
+                        data_key="price_charge",
+                        name="Charge",
+                        fill=t.CHART_PRICE,
+                        radius=[2, 2, 0, 0],
+                        stack_id="price",
+                    ),
                     rx.recharts.x_axis(data_key="time", tick={"fill": t.CHART_MUTED, "fontSize": 10}, interval=5),
                     rx.recharts.y_axis(tick={"fill": t.CHART_MUTED, "fontSize": 10}),
+                    rx.recharts.legend(),
                     rx.recharts.tooltip(),
                     data=AppState.tomorrow_price_data,
                     width="100%",

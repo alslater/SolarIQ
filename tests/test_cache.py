@@ -12,7 +12,8 @@ def _sample_result() -> OptimizationResult:
         solar_forecast_kwh=15.0,
         grid_import_kwh=8.0,
         computed_at="2026-05-02T16:15:00+00:00",
-        target_date="2026-05-03",
+        valid_until="2026-05-04T18:00:00+01:00",
+        window_start="2026-05-03T18:00:00+01:00",
         agile_prices=[15.0] * 48,
         export_prices=[5.0] * 48,
         solar_forecast=[0.0] * 48,
@@ -29,7 +30,8 @@ def test_save_and_load_roundtrip(tmp_path):
     save_strategy(result, path)
     loaded = load_strategy(path)
     assert loaded is not None
-    assert loaded.target_date == "2026-05-03"
+    assert loaded.valid_until == "2026-05-04T18:00:00+01:00"
+    assert loaded.window_start == "2026-05-03T18:00:00+01:00"
     assert loaded.estimated_cost_gbp == pytest.approx(2.50)
     assert len(loaded.periods) == 1
     assert loaded.periods[0].mode == "Self Use"
@@ -45,7 +47,8 @@ def test_save_creates_valid_json(tmp_path):
     save_strategy(_sample_result(), path)
     with open(path) as f:
         data = json.load(f)
-    assert "target_date" in data
+    assert "valid_until" in data
+    assert "window_start" in data
     assert "periods" in data
 
 

@@ -29,6 +29,13 @@ def _make_rate_point(date_str, hour, minute, agile_rate=0.0, export_rate=0.0):
     }
 
 
+def _make_forecast_point(date_str, hour, minute, pv_estimate_kwh=0.0):
+    return {
+        "time": f"{date_str}T{hour:02d}:{minute:02d}:00Z",
+        "pv_estimate_kwh": pv_estimate_kwh,
+    }
+
+
 def test_solar_saving_gbp_in_rows(config):
     """solar_saving_gbp = solar_kwh × import_rate / 100 per slot, summed per bucket."""
     # One slot: 2 kW solar mean → 1 kWh; import rate 20p/kWh → saving = 0.20 £
@@ -42,7 +49,10 @@ def test_solar_saving_gbp_in_rows(config):
     agile_mock = MagicMock()
     agile_mock.query.return_value.get_points.return_value = rate_points
 
-    with patch("solariq.data.influx.InfluxDBClient", side_effect=[solax_mock, agile_mock]):
+    solcast_mock = MagicMock()
+    solcast_mock.query.return_value.get_points.return_value = []
+
+    with patch("solariq.data.influx.InfluxDBClient", side_effect=[solax_mock, agile_mock, solcast_mock]):
         rows = get_historical_range_data(
             config,
             start_date=date(2026, 4, 1),
@@ -66,7 +76,10 @@ def test_solar_saving_gbp_zero_when_no_rates(config):
     agile_mock = MagicMock()
     agile_mock.query.return_value.get_points.return_value = []
 
-    with patch("solariq.data.influx.InfluxDBClient", side_effect=[solax_mock, agile_mock]):
+    solcast_mock = MagicMock()
+    solcast_mock.query.return_value.get_points.return_value = []
+
+    with patch("solariq.data.influx.InfluxDBClient", side_effect=[solax_mock, agile_mock, solcast_mock]):
         rows = get_historical_range_data(
             config,
             start_date=date(2026, 4, 1),
@@ -84,7 +97,10 @@ def test_solar_saving_gbp_present_in_all_rows(config):
     agile_mock = MagicMock()
     agile_mock.query.return_value.get_points.return_value = []
 
-    with patch("solariq.data.influx.InfluxDBClient", side_effect=[solax_mock, agile_mock]):
+    solcast_mock = MagicMock()
+    solcast_mock.query.return_value.get_points.return_value = []
+
+    with patch("solariq.data.influx.InfluxDBClient", side_effect=[solax_mock, agile_mock, solcast_mock]):
         rows = get_historical_range_data(
             config,
             start_date=date(2026, 4, 1),
@@ -92,3 +108,26 @@ def test_solar_saving_gbp_present_in_all_rows(config):
         )
 
     assert all("solar_saving_gbp" in r for r in rows)
+
+
+def test_predicted_solar_kwh_in_rows(config):
+    """predicted_solar_kwh from solar_forecast is aggregated into output rows."""
+    solax_mock = MagicMock()
+    solax_mock.query.return_value.get_points.return_value = []
+
+    agile_mock = MagicMock()
+    agile_mock.query.return_value.get_points.return_value = []
+
+    forecast_points = [_make_forecast_point("2026-04-01", 11, 0, pv_estimate_kwh=1.25)]
+    solcast_mock = MagicMock()
+    solcast_mock.query.return_value.get_points.return_value = forecast_points
+
+    with patch("solariq.data.influx.InfluxDBClient", side_effect=[solax_mock, agile_mock, solcast_mock]):
+        rows = get_historical_range_data(
+            config,
+            start_date=date(2026, 4, 1),
+            end_date=date(2026, 4, 1),
+        )
+
+    total_pred = sum(r["predicted_solar_kwh"] for r in rows)
+    assert total_pred == pytest.approx(1.25, abs=0.001)

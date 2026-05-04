@@ -39,10 +39,12 @@ from solariq.data.octopus import (
     fetch_agile_prices,
     fetch_export_prices,
     fetch_standing_charge_p_per_day,
+    fill_unpublished_slots,
 )
 from solariq.data.solcast import fetch_solar_forecast
 from solariq.logging_config import setup_logging
 from solariq.optimizer.solver import solve
+from solariq.optimizer.strategy import build_rolling_window, current_window_start
 
 logger = logging.getLogger(__name__)
 
@@ -85,11 +87,24 @@ def _after_refresh_time(config: SolarIQConfig) -> bool:
     return now >= now.replace(hour=h, minute=m, second=0, microsecond=0)
 
 
-def _strategy_needs_refresh(config: SolarIQConfig) -> bool:
-    if not _after_refresh_time(config):
-        return False
+def _strategy_needs_refresh(config: SolarIQConfig, agile_tomorrow: list[float]) -> bool:
+    """Return True if we should recompute the strategy.
+
+    Blocks if tomorrow's prices aren't published (all at the unpublished cap),
+    unless test_strategy_mode is enabled.
+    Regenerates if no cached strategy exists or the cached window has expired.
+    """
+    if not config.app.test_strategy_mode and all(p >= UNPUBLISHED_RATE_CAP_P for p in agile_tomorrow):
+        return False  # prices not yet published
     cached = load_strategy()
-    return cached is None or cached.target_date != _tomorrow(config).isoformat()
+    if cached is None:
+        return True
+    tz = ZoneInfo(config.app.timezone)
+    try:
+        valid_until = datetime.fromisoformat(cached.valid_until).astimezone(tz)
+    except (ValueError, AttributeError):
+        return True  # malformed or old cache without valid_until
+    return datetime.now(tz) >= valid_until
 
 
 # ── Scheduled jobs ─────────────────────────────────────────────────────────────
@@ -177,35 +192,61 @@ def refresh_today() -> None:
 
 
 def _maybe_refresh_strategy() -> None:
-    """Compute and cache tomorrow's charging strategy if conditions are met."""
+    """Compute and cache a rolling 48-slot strategy if conditions are met."""
     config = _get_config()
-    if not _strategy_needs_refresh(config):
-        return
-    target = _tomorrow(config)
-    logger.info("refreshing strategy for %s", target)
+    tz = ZoneInfo(config.app.timezone)
+    tomorrow = _tomorrow(config)
     try:
-        agile = fetch_agile_prices(config, target)
-        export = fetch_export_prices(config, target)
+        agile_tomorrow = fetch_agile_prices(config, tomorrow)
+    except Exception as exc:
+        logger.warning("could not fetch tomorrow's agile prices for strategy check: %s", exc)
+        return
+    if not _strategy_needs_refresh(config, agile_tomorrow):
+        return
+
+    logger.info("refreshing rolling window strategy%s", " [TEST MODE]" if config.app.test_strategy_mode else "")
+    try:
+        today = datetime.now(tz).date()
+        current_slot, window_start = current_window_start(config.app.timezone)
+
+        agile_today = fetch_agile_prices(config, today)
+        export_today = fetch_export_prices(config, today)
+        export_tomorrow = fetch_export_prices(config, tomorrow) if not config.app.test_strategy_mode else export_today
+
+        solar_today = load_solar_forecast_influx(config, today) or [0.0] * 48
+        solar_tomorrow = load_solar_forecast_influx(config, tomorrow)
         solar_estimated = False
-        solar = load_solar_forecast_influx(config, target)
-        if solar is None:
+        if solar_tomorrow is None:
             try:
-                solar = fetch_solar_forecast(config, target)
+                solar_tomorrow = fetch_solar_forecast(config, tomorrow)
                 try:
-                    save_solar_forecast_influx(config, solar, target)
+                    save_solar_forecast_influx(config, solar_tomorrow, tomorrow)
                 except Exception as exc:
                     logger.warning("failed to cache tomorrow's forecast: %s", exc)
             except Exception as exc:
-                logger.warning("Solcast unavailable, using zero solar forecast for strategy: %s", exc)
-                solar = [0.0] * 48
+                logger.warning("Solcast unavailable, using zero solar forecast: %s", exc)
+                solar_tomorrow = [0.0] * 48
                 solar_estimated = True
-        load = build_load_profile(config, target)
+
+        load_today = build_load_profile(config, today)
+        load_tomorrow = build_load_profile(config, tomorrow)
+
+        agile_for_today = fill_unpublished_slots(agile_today) if config.app.test_strategy_mode else agile_today
+        agile_for_tomorrow = fill_unpublished_slots(agile_today) if config.app.test_strategy_mode else agile_tomorrow
+        export_today_eff = fill_unpublished_slots(export_today) if config.app.test_strategy_mode else export_today
+        export_tomorrow_eff = fill_unpublished_slots(export_tomorrow) if config.app.test_strategy_mode else export_tomorrow
+        agile = build_rolling_window(agile_for_today, agile_for_tomorrow, current_slot)
+        export = build_rolling_window(export_today_eff, export_tomorrow_eff, current_slot)
+        solar = build_rolling_window(solar_today, solar_tomorrow, current_slot)
+        load = build_rolling_window(load_today, load_tomorrow, current_slot)
+
         today_data = get_today_live_data(config)
         initial_soc = today_data.battery_soc_kwh or (config.battery.capacity_kwh * 0.5)
-        result = solve(agile, export, solar, load, initial_soc, config, target.isoformat())
+
+        result = solve(agile, export, solar, load, initial_soc, config, window_start)
         result.solar_forecast_estimated = solar_estimated
         save_strategy(result)
-        logger.info("strategy saved for %s, estimated cost £%.2f", target, result.estimated_cost_gbp)
+        logger.info("strategy saved, valid until %s, estimated cost £%.2f", result.valid_until, result.estimated_cost_gbp)
     except Exception as exc:
         logger.error("strategy refresh failed: %s", exc, exc_info=True)
 

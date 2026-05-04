@@ -127,7 +127,11 @@ def strategy_table(periods: list[dict]) -> rx.Component:
                         rx.cond(
                             p["mode"] == "Charge",
                             rx.text(f"→ {p['target_soc_pct']}%  {p['max_charge_w']}W", style={"font_size": "13px"}),
-                            rx.text(f"Min SOC {p['min_soc_pct']}%", style={"font_size": "13px"}),
+                            rx.cond(
+                                p["is_default"],
+                                rx.text("Default Self Use (10%)", style={"font_size": "13px", "color": t.MUTED}),
+                                rx.text(f"Min SOC {p['min_soc_pct']}%", style={"font_size": "13px"}),
+                            ),
                         ),
                         style=body_cell_style,
                     ),

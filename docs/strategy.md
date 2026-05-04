@@ -81,21 +81,28 @@ When `import_price[t] < 0` (Octopus Agile prices occasionally go negative), the 
 
 8. **No simultaneous import and export** — `grid_direction[t]` is a binary variable that enforces physical meter reality: a slot is either importing or exporting, never both. Without this constraint the objective is unbounded when import prices are negative, because the solver can inflate both `grid_import` and `grid_export` together by an arbitrary amount while satisfying the energy balance (their *difference* is fixed by the balance, but their individual magnitudes are not). The big-M is `max_charge_rate + peak_load + peak_solar`, a tight physical upper bound on single-slot grid flow.
 
+9. **Peak-window battery reserve (16:00-19:00)** — before the next local 16:00 peak window, the optimiser enforces a battery SOC floor that covers forecast net demand in that window:
+   `reserve = Σ_t max(load[t] - solar[t], 0)` for slots in 16:00-19:00,
+   then `SOC_before_peak >= min_soc + reserve` (capped by reachable/capacity limits).
+
 ---
 
 ## Strategy Output
 
-After solving, the per-slot `charge_mode` decisions are converted into at most **10 named time periods** for entry into the SolaX inverter's Time-of-Use schedule.
+After solving, the per-slot decisions are converted into a displayed plan of contiguous periods. Only **explicit periods** consume one of the inverter's 10 Time-of-Use slots.
 
-Each period is one of:
+Each plan period is one of:
 
-- **Self Use** — the inverter uses solar first, then battery, then grid. The battery discharges freely to meet load.
+- **Self Use (Default)** — implicit inverter default: Self Use with **Min SOC 10%**. These blocks are shown in the plan but do **not** consume one of the 10 explicit slots.
+- **Self Use (Explicit)** — explicitly configured Self Use block with **Min SOC > 10%** when preserving charge is economically beneficial.
 - **Charge** — the inverter charges the battery from the grid at up to 7,500 W, targeting a specific SOC percentage by the end of the period.
 
 ### Period consolidation
 
-1. Contiguous slots with the same mode are merged into a single period.
-2. If the total number of periods exceeds 10 (the SolaX maximum), the smallest Charge blocks are merged with their neighbours until the limit is met.
-3. Each Charge period specifies a **target SOC %** (rounded to the nearest 5 %) calculated from the battery SOC forecast at the end of that period.
+1. Contiguous slots are merged into plan periods.
+2. Self Use periods at 10% Min SOC are treated as **default/implicit** blocks.
+3. Self Use periods above 10% Min SOC are treated as **explicit** blocks.
+4. If explicit blocks exceed 10 (the SolaX maximum), the smallest Charge blocks are merged with neighbours until the explicit count fits.
+5. Each Charge period specifies a **target SOC %** (rounded to the nearest 5 %) calculated from the battery SOC forecast at the end of that period.
 
 The resulting schedule is displayed in the Charging Strategy page and must be keyed into the SolaX web app manually each evening.

@@ -44,7 +44,10 @@ def test_battery_peak_saving_in_peak_slot(config):
     agile_mock = MagicMock()
     agile_mock.query.return_value.get_points.return_value = rate_points
 
-    with patch("solariq.data.influx.InfluxDBClient", side_effect=[solax_mock, agile_mock]):
+    solcast_mock = MagicMock()
+    solcast_mock.query.return_value.get_points.return_value = []
+
+    with patch("solariq.data.influx.InfluxDBClient", side_effect=[solax_mock, agile_mock, solcast_mock]):
         rows = get_historical_range_data(
             config,
             start_date=date(2026, 4, 1),
@@ -68,7 +71,10 @@ def test_battery_peak_saving_zero_outside_peak(config):
     agile_mock = MagicMock()
     agile_mock.query.return_value.get_points.return_value = rate_points
 
-    with patch("solariq.data.influx.InfluxDBClient", side_effect=[solax_mock, agile_mock]):
+    solcast_mock = MagicMock()
+    solcast_mock.query.return_value.get_points.return_value = []
+
+    with patch("solariq.data.influx.InfluxDBClient", side_effect=[solax_mock, agile_mock, solcast_mock]):
         rows = get_historical_range_data(
             config,
             start_date=date(2026, 4, 1),
@@ -95,7 +101,10 @@ def test_battery_peak_saving_excludes_export_portion(config):
     agile_mock = MagicMock()
     agile_mock.query.return_value.get_points.return_value = rate_points
 
-    with patch("solariq.data.influx.InfluxDBClient", side_effect=[solax_mock, agile_mock]):
+    solcast_mock = MagicMock()
+    solcast_mock.query.return_value.get_points.return_value = []
+
+    with patch("solariq.data.influx.InfluxDBClient", side_effect=[solax_mock, agile_mock, solcast_mock]):
         rows = get_historical_range_data(
             config,
             start_date=date(2026, 4, 1),
@@ -114,7 +123,10 @@ def test_battery_peak_saving_present_in_all_rows(config):
     agile_mock = MagicMock()
     agile_mock.query.return_value.get_points.return_value = []
 
-    with patch("solariq.data.influx.InfluxDBClient", side_effect=[solax_mock, agile_mock]):
+    solcast_mock = MagicMock()
+    solcast_mock.query.return_value.get_points.return_value = []
+
+    with patch("solariq.data.influx.InfluxDBClient", side_effect=[solax_mock, agile_mock, solcast_mock]):
         rows = get_historical_range_data(
             config,
             start_date=date(2026, 4, 1),
