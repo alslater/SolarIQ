@@ -105,6 +105,7 @@ class AppState(rx.State):
 
     # Navigation
     current_page: str = "today"
+    sidebar_collapsed: bool = False
 
     # Tomorrow strategy
     strategy_periods: list[dict] = []
@@ -751,6 +752,10 @@ class AppState(rx.State):
             self.account_form_message = ""
             self.admin_form_error = ""
             self.admin_form_message = ""
+
+    @rx.event
+    def toggle_sidebar(self):
+        self.sidebar_collapsed = not self.sidebar_collapsed
 
     @rx.event
     def set_history_start(self, value: str):

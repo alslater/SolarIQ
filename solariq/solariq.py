@@ -18,20 +18,26 @@ def _nav_item(label: str, icon: str, page_key: str) -> rx.Component:
                 size=16,
                 style={"min_width": "20px", "flex_shrink": "0"},
             ),
-            rx.text(
-                label,
-                style={
-                    "font_size": "14px",
-                    "font_weight": "500",
-                    "font_family": "Inter, system-ui, sans-serif",
-                },
+            rx.cond(
+                AppState.sidebar_collapsed,
+                rx.fragment(),
+                rx.text(
+                    label,
+                    style={
+                        "font_size": "14px",
+                        "font_weight": "500",
+                        "font_family": "Inter, system-ui, sans-serif",
+                    },
+                ),
             ),
             spacing="3",
             align="center",
+            justify=rx.cond(AppState.sidebar_collapsed, "center", "start"),
+            width="100%",
         ),
         on_click=AppState.set_page(page_key),
         cursor="pointer",
-        padding="10px 20px",
+        padding=rx.cond(AppState.sidebar_collapsed, "10px 12px", "10px 20px"),
         border_left=rx.cond(is_active, f"3px solid {t.PRIMARY}", "3px solid transparent"),
         background=rx.cond(is_active, "#0d1e33", "transparent"),
         color=rx.cond(is_active, t.PRIMARY, t.SIDEBAR_MUTED),
@@ -43,20 +49,44 @@ def _sidebar() -> rx.Component:
     return rx.box(
         # Logo
         rx.hstack(
-            rx.icon("sun", size=20, color=t.SIDEBAR_FG),
-            rx.heading(
-                "SolarIQ",
+            rx.hstack(
+                rx.icon("sun", size=20, color=t.SIDEBAR_FG),
+                rx.cond(
+                    AppState.sidebar_collapsed,
+                    rx.fragment(),
+                    rx.heading(
+                        "SolarIQ",
+                        style={
+                            "font_size": "17px",
+                            "font_weight": "700",
+                            "color": t.SIDEBAR_FG,
+                            "font_family": "Inter, system-ui, sans-serif",
+                            "letter_spacing": "-0.02em",
+                        },
+                    ),
+                ),
+                spacing="2",
+                align="center",
+            ),
+            rx.button(
+                rx.icon(
+                    rx.cond(AppState.sidebar_collapsed, "panel-left-open", "panel-left-close"),
+                    size=14,
+                    color=t.SIDEBAR_MUTED,
+                ),
+                on_click=AppState.toggle_sidebar,
                 style={
-                    "font_size": "17px",
-                    "font_weight": "700",
-                    "color": t.SIDEBAR_FG,
-                    "font_family": "Inter, system-ui, sans-serif",
-                    "letter_spacing": "-0.02em",
+                    "background": "transparent",
+                    "border": f"1px solid {t.BORDER}",
+                    "border_radius": "6px",
+                    "cursor": "pointer",
+                    "padding": "6px",
+                    "_hover": {"border_color": t.PRIMARY},
                 },
             ),
-            spacing="2",
+            justify="between",
             align="center",
-            padding="0 20px",
+            padding=rx.cond(AppState.sidebar_collapsed, "0 10px", "0 20px"),
             height="56px",
             border_bottom=f"1px solid {t.BORDER}",
         ),
@@ -75,28 +105,38 @@ def _sidebar() -> rx.Component:
         rx.spacer(),
         rx.box(
             rx.vstack(
-                rx.text(
-                    AppState.current_user,
-                    style={"font_size": "12px", "font_weight": "600", "color": t.SIDEBAR_FG},
+                rx.cond(
+                    AppState.sidebar_collapsed,
+                    rx.fragment(),
+                    rx.text(
+                        AppState.current_user,
+                        style={"font_size": "12px", "font_weight": "600", "color": t.SIDEBAR_FG},
+                    ),
                 ),
                 rx.button(
-                    "Sign out",
+                    rx.cond(
+                        AppState.sidebar_collapsed,
+                        rx.icon("log-out", size=14, color=t.SIDEBAR_MUTED),
+                        rx.text("Sign out"),
+                    ),
                     on_click=AppState.logout,
                     style={
                         "background": "transparent",
                         "border": f"1px solid {t.BORDER}",
                         "border_radius": "6px",
                         "cursor": "pointer",
-                        "padding": "4px 10px",
+                        "padding": rx.cond(AppState.sidebar_collapsed, "6px", "4px 10px"),
                         "font_size": "12px",
                         "color": t.SIDEBAR_MUTED,
                         "_hover": {"border_color": t.PRIMARY, "color": t.SIDEBAR_FG},
+                        "width": rx.cond(AppState.sidebar_collapsed, "auto", "100%"),
                     },
                 ),
                 spacing="2",
-                align="start",
+                align=rx.cond(AppState.sidebar_collapsed, "center", "start"),
+                width="100%",
             ),
-            padding="12px 20px",
+            padding=rx.cond(AppState.sidebar_collapsed, "12px 10px", "12px 20px"),
             border_top=f"1px solid {t.BORDER}",
             width="100%",
         ),
@@ -118,17 +158,18 @@ def _sidebar() -> rx.Component:
                     "_hover": {"border_color": t.PRIMARY},
                 },
             ),
-            padding="16px 20px",
+            padding=rx.cond(AppState.sidebar_collapsed, "16px 10px", "16px 20px"),
             border_top=f"1px solid {t.BORDER}",
         ),
         style={
             "background": t.SIDEBAR,
-            "width": "220px",
-            "min_width": "220px",
+            "width": rx.cond(AppState.sidebar_collapsed, "72px", "220px"),
+            "min_width": rx.cond(AppState.sidebar_collapsed, "72px", "220px"),
             "min_height": "100vh",
             "border_right": f"1px solid {t.BORDER}",
             "display": "flex",
             "flex_direction": "column",
+            "transition": "width 160ms ease",
         },
     )
 
