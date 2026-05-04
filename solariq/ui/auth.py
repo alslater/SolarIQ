@@ -4,7 +4,7 @@ from solariq.ui import theme as t
 from solariq.ui.state import AppState
 
 
-def _field(label: str, value, on_change, *, placeholder: str = "", password: bool = False) -> rx.Component:
+def _field(label: str, on_change, *, value=None, placeholder: str = "", password: bool = False) -> rx.Component:
     return rx.vstack(
         rx.text(
             label,
@@ -17,10 +17,10 @@ def _field(label: str, value, on_change, *, placeholder: str = "", password: boo
             },
         ),
         rx.input(
-            value=value,
             on_change=on_change,
             placeholder=placeholder,
             type="password" if password else "text",
+            **({"value": value} if value is not None else {}),
             style={
                 "width": "100%",
                 "background": t.SECONDARY,
@@ -53,8 +53,8 @@ def login_view() -> rx.Component:
                     "Use your SolarIQ username and password.",
                     style={"font_size": "14px", "color": t.MUTED},
                 ),
-                _field("Username", AppState.login_username, AppState.set_login_username, placeholder="admin"),
-                _field("Password", AppState.login_password, AppState.set_login_password, password=True),
+                _field("Username", AppState.set_login_username, value=AppState.login_username, placeholder="admin"),
+                _field("Password", AppState.set_login_password, password=True),
                 rx.cond(
                     AppState.auth_error != "",
                     rx.text(AppState.auth_error, style={"color": t.FAIL, "font_size": "13px"}),
@@ -109,11 +109,10 @@ def bootstrap_view() -> rx.Component:
                     "No users were found. This account will be created as an administrator.",
                     style={"font_size": "14px", "color": t.MUTED},
                 ),
-                _field("Username", AppState.setup_username, AppState.set_setup_username, placeholder="admin"),
-                _field("Password", AppState.setup_password, AppState.set_setup_password, password=True),
+                _field("Username", AppState.set_setup_username, value=AppState.setup_username, placeholder="admin"),
+                _field("Password", AppState.set_setup_password, password=True),
                 _field(
                     "Confirm password",
-                    AppState.setup_password_confirm,
                     AppState.set_setup_password_confirm,
                     password=True,
                 ),

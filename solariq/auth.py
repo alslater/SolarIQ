@@ -11,6 +11,9 @@ from pathlib import Path
 PBKDF2_ITERATIONS = 240_000
 PASSWORD_MIN_LENGTH = 8
 SESSION_TTL_DAYS = 30
+MAX_FAILED_LOGIN_ATTEMPTS = 5
+LOGIN_LOCKOUT_MINUTES = 5
+LOCKOUT_ERROR = f"Too many failed sign-in attempts. Try again in {LOGIN_LOCKOUT_MINUTES} minutes."
 
 
 @dataclass(frozen=True)
@@ -54,6 +57,15 @@ def init_auth_db(db_path: str) -> None:
                 expires_at TEXT NOT NULL,
                 FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
             );
+
+            CREATE TABLE IF NOT EXISTS login_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL,
+                failed_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_login_attempts_username_failed_at
+            ON login_attempts (username, failed_at);
             """
         )
 
@@ -99,6 +111,39 @@ def _hash_password(password: str, salt: bytes) -> str:
     return hashed.hex()
 
 
+def _hash_session_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def _lockout_cutoff(now: datetime | None = None) -> str:
+    current = now or _utcnow()
+    return (current - timedelta(minutes=LOGIN_LOCKOUT_MINUTES)).isoformat()
+
+
+def _prune_expired_login_attempts(conn: sqlite3.Connection, now: datetime | None = None) -> None:
+    conn.execute("DELETE FROM login_attempts WHERE failed_at < ?", (_lockout_cutoff(now),))
+
+
+def _is_locked_out(conn: sqlite3.Connection, username: str, now: datetime | None = None) -> bool:
+    row = conn.execute(
+        "SELECT COUNT(*) FROM login_attempts WHERE username = ? AND failed_at >= ?",
+        (username, _lockout_cutoff(now)),
+    ).fetchone()
+    return int(row[0]) >= MAX_FAILED_LOGIN_ATTEMPTS
+
+
+def _record_failed_login(conn: sqlite3.Connection, username: str, now: datetime | None = None) -> None:
+    failed_at = (now or _utcnow()).isoformat()
+    conn.execute(
+        "INSERT INTO login_attempts (username, failed_at) VALUES (?, ?)",
+        (username, failed_at),
+    )
+
+
+def _clear_failed_logins(conn: sqlite3.Connection, username: str) -> None:
+    conn.execute("DELETE FROM login_attempts WHERE username = ?", (username,))
+
+
 def has_users(db_path: str) -> bool:
     with _connect(db_path) as conn:
         row = conn.execute("SELECT EXISTS(SELECT 1 FROM users)").fetchone()
@@ -111,6 +156,42 @@ def has_admin_users(db_path: str) -> bool:
     return bool(row[0])
 
 
+def _insert_user_atomic(
+    conn: sqlite3.Connection,
+    username: str,
+    password_hash: str,
+    password_salt: str,
+    created_at: str,
+    *,
+    is_admin: bool,
+    require_no_existing_users: bool = False,
+) -> UserRecord:
+    conn.execute("BEGIN IMMEDIATE")
+    first_user = bool(conn.execute("SELECT NOT EXISTS(SELECT 1 FROM users)").fetchone()[0])
+
+    if require_no_existing_users and not first_user:
+        raise ValueError("A user already exists. Please sign in.")
+
+    effective_admin = bool(is_admin or first_user)
+
+    try:
+        cursor = conn.execute(
+            """
+            INSERT INTO users (username, password_hash, password_salt, is_admin, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (username, password_hash, password_salt, int(effective_admin), created_at),
+        )
+    except sqlite3.IntegrityError as exc:
+        raise ValueError("That username already exists.") from exc
+
+    return UserRecord(
+        id=int(cursor.lastrowid),
+        username=username,
+        is_admin=effective_admin,
+    )
+
+
 def create_user(db_path: str, username: str, password: str, *, is_admin: bool = False) -> UserRecord:
     normalized = _validate_username(username)
     _validate_password(password)
@@ -119,22 +200,32 @@ def create_user(db_path: str, username: str, password: str, *, is_admin: bool = 
     password_hash = _hash_password(password, salt)
 
     with _connect(db_path) as conn:
-        first_user = conn.execute("SELECT NOT EXISTS(SELECT 1 FROM users)").fetchone()[0]
-        try:
-            cursor = conn.execute(
-                """
-                INSERT INTO users (username, password_hash, password_salt, is_admin, created_at)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (normalized, password_hash, salt.hex(), int(is_admin or first_user), now),
-            )
-        except sqlite3.IntegrityError as exc:
-            raise ValueError("That username already exists.") from exc
+        return _insert_user_atomic(
+            conn,
+            normalized,
+            password_hash,
+            salt.hex(),
+            now,
+            is_admin=is_admin,
+        )
 
-        return UserRecord(
-            id=int(cursor.lastrowid),
-            username=normalized,
-            is_admin=bool(is_admin or first_user),
+
+def create_initial_user(db_path: str, username: str, password: str) -> UserRecord:
+    normalized = _validate_username(username)
+    _validate_password(password)
+    now = _utcnow().isoformat()
+    salt = secrets.token_bytes(16)
+    password_hash = _hash_password(password, salt)
+
+    with _connect(db_path) as conn:
+        return _insert_user_atomic(
+            conn,
+            normalized,
+            password_hash,
+            salt.hex(),
+            now,
+            is_admin=True,
+            require_no_existing_users=True,
         )
 
 
@@ -144,18 +235,27 @@ def authenticate_user(db_path: str, username: str, password: str) -> UserRecord 
         return None
 
     with _connect(db_path) as conn:
+        now = _utcnow()
+        _prune_expired_login_attempts(conn, now)
+        if _is_locked_out(conn, normalized, now):
+            raise ValueError(LOCKOUT_ERROR)
+
         row = conn.execute(
             "SELECT id, username, password_hash, password_salt, is_admin FROM users WHERE username = ?",
             (normalized,),
         ).fetchone()
 
-    if row is None:
-        return None
+        if row is None:
+            _record_failed_login(conn, normalized, now)
+            return None
 
-    expected_hash = row["password_hash"]
-    actual_hash = _hash_password(password, bytes.fromhex(row["password_salt"]))
-    if not hmac.compare_digest(expected_hash, actual_hash):
-        return None
+        expected_hash = row["password_hash"]
+        actual_hash = _hash_password(password, bytes.fromhex(row["password_salt"]))
+        if not hmac.compare_digest(expected_hash, actual_hash):
+            _record_failed_login(conn, normalized, now)
+            return None
+
+        _clear_failed_logins(conn, normalized)
 
     return UserRecord(id=int(row["id"]), username=row["username"], is_admin=bool(row["is_admin"]))
 
@@ -163,6 +263,7 @@ def authenticate_user(db_path: str, username: str, password: str) -> UserRecord 
 def create_session(db_path: str, user_id: int, *, ttl_days: int = SESSION_TTL_DAYS) -> str:
     now = _utcnow()
     token = secrets.token_urlsafe(32)
+    token_hash = _hash_session_token(token)
     expires_at = (now + timedelta(days=ttl_days)).isoformat()
     with _connect(db_path) as conn:
         conn.execute(
@@ -170,7 +271,7 @@ def create_session(db_path: str, user_id: int, *, ttl_days: int = SESSION_TTL_DA
             INSERT INTO sessions (token, user_id, created_at, last_seen_at, expires_at)
             VALUES (?, ?, ?, ?, ?)
             """,
-            (token, user_id, now.isoformat(), now.isoformat(), expires_at),
+            (token_hash, user_id, now.isoformat(), now.isoformat(), expires_at),
         )
     return token
 
@@ -183,6 +284,7 @@ def get_session_user(db_path: str, token: str, *, ttl_days: int = SESSION_TTL_DA
     if not token:
         return None
 
+    token_hash = _hash_session_token(token)
     now = _utcnow()
     expires_at = (now + timedelta(days=ttl_days)).isoformat()
 
@@ -195,14 +297,28 @@ def get_session_user(db_path: str, token: str, *, ttl_days: int = SESSION_TTL_DA
             JOIN users u ON u.id = s.user_id
             WHERE s.token = ?
             """,
-            (token,),
+            (token_hash,),
         ).fetchone()
+
         if row is None:
-            return None
+            # Backward compatibility: migrate any legacy plaintext token row on read.
+            row = conn.execute(
+                """
+                SELECT u.id, u.username, u.is_admin
+                FROM sessions s
+                JOIN users u ON u.id = s.user_id
+                WHERE s.token = ?
+                """,
+                (token,),
+            ).fetchone()
+            if row is None:
+                return None
+
+            conn.execute("UPDATE sessions SET token = ? WHERE token = ?", (token_hash, token))
 
         conn.execute(
             "UPDATE sessions SET last_seen_at = ?, expires_at = ? WHERE token = ?",
-            (now.isoformat(), expires_at, token),
+            (now.isoformat(), expires_at, token_hash),
         )
 
     return UserRecord(id=int(row["id"]), username=row["username"], is_admin=bool(row["is_admin"]))
@@ -211,8 +327,9 @@ def get_session_user(db_path: str, token: str, *, ttl_days: int = SESSION_TTL_DA
 def invalidate_session(db_path: str, token: str) -> None:
     if not token:
         return
+    token_hash = _hash_session_token(token)
     with _connect(db_path) as conn:
-        conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
+        conn.execute("DELETE FROM sessions WHERE token IN (?, ?)", (token_hash, token))
 
 
 def list_users(db_path: str) -> list[str]:

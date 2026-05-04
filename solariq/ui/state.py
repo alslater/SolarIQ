@@ -4,26 +4,6 @@ from zoneinfo import ZoneInfo
 
 import reflex as rx
 
-from solariq.auth import (
-    PASSWORD_MIN_LENGTH,
-    authenticate_user,
-    change_password,
-    create_session,
-    create_user,
-    create_user_as_admin,
-    delete_user_as_admin,
-    get_session_user,
-    get_user_by_username,
-    has_admin_users,
-    has_users,
-    init_auth_db,
-    invalidate_session,
-    list_users,
-    list_users_with_roles,
-    promote_user_to_admin,
-    set_user_admin_role_as_admin,
-    validate_password_strength,
-)
 from solariq.cache import (
     get_cache_paths,
     load_calibration,
@@ -34,25 +14,15 @@ from solariq.cache import (
     save_solar_forecast_today,
     save_strategy,
 )
-from solariq.config import load_config, SolarIQConfig
-from solariq.logging_config import setup_logging
+from solariq.config import SolarIQConfig
 from solariq.data.influx import get_today_live_data, get_historical_range_data, get_latest_inverter_stats
 from solariq.data.load_profile import build_load_profile
 from solariq.data.octopus import fetch_agile_prices, fetch_export_prices, fetch_standing_charge_p_per_day, fetch_total_standing_charge_gbp, fill_unpublished_slots
 from solariq.data.solcast import fetch_solar_forecast
 from solariq.data.weather import fetch_today_weather
 from solariq.optimizer.solver import solve
-
-_config: SolarIQConfig | None = None
-
-
-def _get_config() -> SolarIQConfig:
-    global _config
-    if _config is None:
-        _config = load_config()
-        setup_logging(_config.app.log_file, _config.app.log_level)
-    return _config
-
+from solariq.ui.auth_state import AuthState
+from solariq.ui.state_common import get_config as _get_config
 
 def _tomorrow(config: SolarIQConfig) -> date:
     tz = ZoneInfo(config.app.timezone)
@@ -65,44 +35,7 @@ def _prices_published(agile_tomorrow: list[float]) -> bool:
     return not all(p >= UNPUBLISHED_RATE_CAP_P for p in agile_tomorrow)
 
 
-class AppState(rx.State):
-    # Authentication
-    auth_token: str = rx.Cookie(
-        "",
-        name="solariq_auth_token",
-        path="/",
-        max_age=60 * 60 * 24 * 30,
-        same_site="lax",
-    )
-    auth_ready: bool = False
-    auth_users_exist: bool = False
-    current_user: str = ""
-    current_user_is_admin: bool = False
-    auth_error: str = ""
-    login_username: str = ""
-    login_password: str = ""
-    setup_username: str = ""
-    setup_password: str = ""
-    setup_password_confirm: str = ""
-    new_user_username: str = ""
-    new_user_password: str = ""
-    new_user_password_confirm: str = ""
-    new_user_is_admin: bool = False
-    current_password: str = ""
-    new_password: str = ""
-    new_password_confirm: str = ""
-    user_list: list[dict] = []
-    account_form_error: str = ""
-    account_form_message: str = ""
-    admin_form_error: str = ""
-    admin_form_message: str = ""
-    current_password_error: str = ""
-    new_password_error: str = ""
-    new_password_confirm_error: str = ""
-    new_user_username_error: str = ""
-    new_user_password_error: str = ""
-    new_user_password_confirm_error: str = ""
-
+class AppState(AuthState):
     # Navigation
     current_page: str = "today"
     sidebar_collapsed: bool = False
@@ -138,6 +71,7 @@ class AppState(rx.State):
     current_rate_p: float = 0.0
     current_export_rate_p: float = 0.0
     today_loading: bool = False
+    today_poll_running: bool = False
     today_error: str = ""
     today_weather_code: int = -1
     today_weather_max_temp_c: float = 0.0
@@ -185,6 +119,26 @@ class AppState(rx.State):
     calibration_computed_at: str = ""
     calibration_octopus_kwh: float = 0.0
     calibration_influx_kwh: float = 0.0
+
+    def _post_auth_success_events(self) -> list:
+        return [
+            AppState.load_cached_strategy,
+            AppState.refresh_today_data,
+            AppState.load_cached_calibration,
+        ]
+
+    @rx.event
+    def login(self):
+        return self._login_impl()
+
+    @rx.event
+    def create_initial_user(self):
+        return self._create_initial_user_impl()
+
+    @rx.event
+    def on_load(self):
+        return self._on_load_impl()
+
     calibration_loading: bool = False
     calibration_error: str = ""
 
@@ -389,369 +343,14 @@ class AppState(rx.State):
         except Exception:
             return self.calibration_computed_at
 
-    @rx.var
-    def is_authenticated(self) -> bool:
-        return bool(self.current_user)
-
-    @rx.var
-    def needs_initial_user(self) -> bool:
-        return self.auth_ready and not self.auth_users_exist
-
-    @rx.event
-    def set_login_username(self, value: str):
-        self.login_username = value
-
-    @rx.event
-    def set_login_password(self, value: str):
-        self.login_password = value
-
-    @rx.event
-    def set_setup_username(self, value: str):
-        self.setup_username = value
-
-    @rx.event
-    def set_setup_password(self, value: str):
-        self.setup_password = value
-
-    @rx.event
-    def set_setup_password_confirm(self, value: str):
-        self.setup_password_confirm = value
-
-    @rx.event
-    def set_new_user_username(self, value: str):
-        self.new_user_username = value
-        self.new_user_username_error = ""
-        self.admin_form_error = ""
-        self.admin_form_message = ""
-
-    @rx.event
-    def set_new_user_password(self, value: str):
-        self.new_user_password = value
-        self.new_user_password_error = ""
-        self.admin_form_error = ""
-        self.admin_form_message = ""
-
-    @rx.event
-    def set_new_user_password_confirm(self, value: str):
-        self.new_user_password_confirm = value
-        self.new_user_password_confirm_error = ""
-        self.admin_form_error = ""
-        self.admin_form_message = ""
-
-    @rx.event
-    def set_new_user_is_admin(self, value: bool):
-        self.new_user_is_admin = bool(value)
-        self.admin_form_error = ""
-        self.admin_form_message = ""
-
-    @rx.event
-    def set_current_password(self, value: str):
-        self.current_password = value
-        self.current_password_error = ""
-        self.account_form_error = ""
-        self.account_form_message = ""
-
-    @rx.event
-    def set_new_password(self, value: str):
-        self.new_password = value
-        self.new_password_error = ""
-        self.account_form_error = ""
-        self.account_form_message = ""
-
-    @rx.event
-    def set_new_password_confirm(self, value: str):
-        self.new_password_confirm = value
-        self.new_password_confirm_error = ""
-        self.account_form_error = ""
-        self.account_form_message = ""
-
-    @rx.event
-    def refresh_user_list(self):
-        if not self.current_user or not self.current_user_is_admin:
-            self.user_list = []
-            return
-
-        db_path = _get_config().app.auth_db_path
-        self.user_list = list_users_with_roles(db_path)
-
-    @rx.event
-    def login(self):
-        db_path = _get_config().app.auth_db_path
-        init_auth_db(db_path)
-        self.auth_users_exist = has_users(db_path)
-        self.auth_error = ""
-
-        if not self.auth_users_exist:
-            self.auth_error = "No users exist yet. Create the first user to continue."
-            return
-
-        user = authenticate_user(db_path, self.login_username, self.login_password)
-        if user is None:
-            self.auth_error = "Invalid username or password."
-            return
-
-        recovered_admin = False
-        if not has_admin_users(db_path):
-            user = promote_user_to_admin(db_path, user.username)
-            recovered_admin = True
-
-        token = create_session(db_path, user.id)
-        self.auth_token = token
-        self.current_user = user.username
-        self.current_user_is_admin = user.is_admin
-        self.login_password = ""
-        self.auth_error = ""
-        self.refresh_user_list()
-
-        if recovered_admin:
-            return [
-                rx.toast.warning(
-                    "No administrators were found. This user has been promoted to admin.",
-                    duration=6000,
-                    close_button=True,
-                ),
-                AppState.load_cached_strategy,
-                AppState.refresh_today_data,
-                AppState.load_cached_calibration,
-            ]
-
-        return [AppState.load_cached_strategy, AppState.refresh_today_data, AppState.load_cached_calibration]
-
-    @rx.event
-    def logout(self):
-        db_path = _get_config().app.auth_db_path
-        invalidate_session(db_path, self.auth_token)
-
-        self.auth_token = ""
-        self.current_user = ""
-        self.current_user_is_admin = False
-        self.login_password = ""
-        self.current_page = "today"
-        self.user_list = []
-        self.account_form_error = ""
-        self.account_form_message = ""
-        self.admin_form_error = ""
-        self.admin_form_message = ""
-        self.current_password_error = ""
-        self.new_password_error = ""
-        self.new_password_confirm_error = ""
-        self.new_user_username_error = ""
-        self.new_user_password_error = ""
-        self.new_user_password_confirm_error = ""
-        self.inverter_poll_generation += 1
-
-    @rx.event
-    def create_initial_user(self):
-        db_path = _get_config().app.auth_db_path
-        init_auth_db(db_path)
-
-        if has_users(db_path):
-            self.auth_users_exist = True
-            self.auth_error = "A user already exists. Please sign in."
-            return
-
-        if self.setup_password != self.setup_password_confirm:
-            self.auth_error = "Passwords do not match."
-            return
-
-        try:
-            user = create_user(db_path, self.setup_username, self.setup_password, is_admin=True)
-        except ValueError as exc:
-            self.auth_error = str(exc)
-            return
-
-        token = create_session(db_path, user.id)
-        self.auth_token = token
-        self.current_user = user.username
-        self.current_user_is_admin = user.is_admin
-        self.auth_users_exist = True
-        self.auth_error = ""
-        self.setup_password = ""
-        self.setup_password_confirm = ""
-        self.refresh_user_list()
-
-        return [AppState.load_cached_strategy, AppState.refresh_today_data, AppState.load_cached_calibration]
-
-    @rx.event
-    def create_managed_user(self):
-        self.new_user_username_error = ""
-        self.new_user_password_error = ""
-        self.new_user_password_confirm_error = ""
-        self.admin_form_error = ""
-        self.admin_form_message = ""
-
-        if not self.current_user or not self.current_user_is_admin:
-            self.admin_form_error = "Only administrators can create users."
-            return
-
-        username = self.new_user_username.strip()
-        has_error = False
-        if len(username) < 3:
-            self.new_user_username_error = "Username must be at least 3 characters."
-            has_error = True
-        elif len(username) > 64:
-            self.new_user_username_error = "Username must be 64 characters or fewer."
-            has_error = True
-
-        password_error = validate_password_strength(self.new_user_password)
-        if password_error is not None:
-            self.new_user_password_error = password_error
-            has_error = True
-
-        if self.new_user_password != self.new_user_password_confirm:
-            self.new_user_password_confirm_error = "Passwords do not match."
-            has_error = True
-
-        if has_error:
-            return
-
-        db_path = _get_config().app.auth_db_path
-        try:
-            create_user_as_admin(
-                db_path,
-                self.current_user,
-                self.new_user_username,
-                self.new_user_password,
-                is_admin=self.new_user_is_admin,
-            )
-            self.admin_form_message = ""
-            self.new_user_username = ""
-            self.new_user_password = ""
-            self.new_user_password_confirm = ""
-            self.new_user_is_admin = False
-            self.user_list = list_users_with_roles(db_path)
-            return rx.toast.success(
-                "User created.",
-                duration=4000,
-                close_button=True,
-            )
-        except ValueError as exc:
-            message = str(exc)
-            if "username" in message.lower():
-                self.new_user_username_error = message
-            else:
-                self.admin_form_error = message
-
-    @rx.event
-    def delete_managed_user(self, username: str):
-        if not self.current_user or not self.current_user_is_admin:
-            self.admin_form_error = "Only administrators can delete users."
-            self.admin_form_message = ""
-            return
-
-        if username == self.current_user:
-            self.admin_form_error = "You cannot delete your own user."
-            self.admin_form_message = ""
-            return rx.toast.warning(
-                "You cannot delete your own user.",
-                duration=4000,
-                close_button=True,
-            )
-
-        db_path = _get_config().app.auth_db_path
-        try:
-            delete_user_as_admin(db_path, self.current_user, username)
-            self.admin_form_error = ""
-            self.admin_form_message = ""
-            self.user_list = list_users_with_roles(db_path)
-            return rx.toast.success(
-                f"Deleted user '{username}'.",
-                duration=4000,
-                close_button=True,
-            )
-        except ValueError as exc:
-            self.admin_form_error = str(exc)
-            self.admin_form_message = ""
-
-    @rx.event
-    def set_managed_user_admin_role(self, username: str, is_admin: bool):
-        if not self.current_user or not self.current_user_is_admin:
-            self.admin_form_error = "Only administrators can change user roles."
-            return
-
-        if username == self.current_user:
-            self.admin_form_error = "You cannot change your own role."
-            return rx.toast.warning(
-                "You cannot change your own role.",
-                duration=4000,
-                close_button=True,
-            )
-
-        db_path = _get_config().app.auth_db_path
-        try:
-            updated = set_user_admin_role_as_admin(
-                db_path,
-                self.current_user,
-                username,
-                is_admin=is_admin,
-            )
-            self.admin_form_error = ""
-            self.user_list = list_users_with_roles(db_path)
-            action = "Promoted" if updated.is_admin else "Demoted"
-            return rx.toast.success(
-                f"{action} '{updated.username}'.",
-                duration=4000,
-                close_button=True,
-            )
-        except ValueError as exc:
-            self.admin_form_error = str(exc)
-
-    @rx.event
-    def update_my_password(self):
-        self.current_password_error = ""
-        self.new_password_error = ""
-        self.new_password_confirm_error = ""
-        self.account_form_error = ""
-        self.account_form_message = ""
-
-        if not self.current_user:
-            self.account_form_error = "You are not signed in."
-            return
-
-        has_error = False
-        if not self.current_password:
-            self.current_password_error = "Current password is required."
-            has_error = True
-
-        password_error = validate_password_strength(self.new_password)
-        if password_error is not None:
-            self.new_password_error = password_error
-            has_error = True
-
-        if self.new_password != self.new_password_confirm:
-            self.new_password_confirm_error = "Passwords do not match."
-            has_error = True
-
-        if has_error:
-            return
-
-        db_path = _get_config().app.auth_db_path
-        try:
-            change_password(db_path, self.current_user, self.current_password, self.new_password)
-            self.current_password = ""
-            self.new_password = ""
-            self.new_password_confirm = ""
-            self.account_form_message = ""
-            return rx.toast.success(
-                "Password updated.",
-                duration=4000,
-                close_button=True,
-            )
-        except ValueError as exc:
-            message = str(exc)
-            if "current password" in message.lower():
-                self.current_password_error = message
-            else:
-                self.account_form_error = message
-
     @rx.event
     def set_page(self, page: str):
         self.current_page = page
         if page == "settings":
             self.account_form_error = ""
-            self.account_form_message = ""
             self.admin_form_error = ""
-            self.admin_form_message = ""
+        if page == "today":
+            return AppState.refresh_today_data
 
     @rx.event
     def toggle_sidebar(self):
@@ -857,45 +456,6 @@ class AppState(rx.State):
                 self.history_loading = False
 
     @rx.event
-    def on_load(self):
-        db_path = _get_config().app.auth_db_path
-        init_auth_db(db_path)
-
-        self.account_form_error = ""
-        self.account_form_message = ""
-        self.admin_form_error = ""
-        self.admin_form_message = ""
-
-        self.auth_users_exist = has_users(db_path)
-        self.auth_ready = True
-        self.auth_error = ""
-
-        if not self.auth_users_exist:
-            self.current_user = ""
-            self.current_user_is_admin = False
-            self.auth_token = ""
-            return
-
-        session_user = get_session_user(db_path, self.auth_token)
-        if session_user is None:
-            self.current_user = ""
-            self.current_user_is_admin = False
-            self.auth_token = ""
-            return
-
-        if not has_admin_users(db_path):
-            promote_user_to_admin(db_path, session_user.username)
-            promoted = get_user_by_username(db_path, session_user.username)
-            if promoted is not None:
-                session_user = promoted
-
-        self.current_user = session_user.username
-        self.current_user_is_admin = session_user.is_admin
-        self.refresh_user_list()
-
-        return [AppState.load_cached_strategy, AppState.refresh_today_data, AppState.load_cached_calibration]
-
-    @rx.event
     def load_cached_strategy(self):
         result = load_strategy()
         if result:
@@ -938,6 +498,18 @@ class AppState(rx.State):
             return 0
         return int(self.inverter_countdown / self.inverter_refresh_interval * 100)
 
+    @rx.var
+    def inverter_recorded_at_local(self) -> str:
+        """inverter_recorded_at formatted in the configured local timezone."""
+        if not self.inverter_recorded_at:
+            return ""
+        try:
+            tz = ZoneInfo(_get_config().app.timezone)
+            dt = datetime.fromisoformat(self.inverter_recorded_at.replace("Z", "+00:00")).astimezone(tz)
+            return dt.strftime("%d %b %Y %H:%M")
+        except Exception:
+            return self.inverter_recorded_at
+
     def _write_inverter_stats(self, stats: dict | None) -> None:
         if stats:
             self.inverter_pvpower_kw = stats["pvpower_kw"]
@@ -950,9 +522,22 @@ class AppState(rx.State):
             self.inverter_battery_temp_c = stats["battery_temp_c"]
             self.inverter_temp_c = stats["inverter_temp_c"]
             self.inverter_grid_voltage_v = stats["grid_voltage_v"]
-            self.inverter_recorded_at = stats["recorded_at"]
+            recorded_at_raw = str(stats.get("recorded_at") or "")
+            if recorded_at_raw:
+                try:
+                    dt = datetime.fromisoformat(recorded_at_raw.replace("Z", "+00:00"))
+                    # Influx LAST() can return epoch-zero timestamps when no real points exist.
+                    if dt.year >= 2000:
+                        self.inverter_recorded_at = dt.isoformat().replace("+00:00", "Z")
+                    else:
+                        self.inverter_recorded_at = ""
+                except ValueError:
+                    self.inverter_recorded_at = ""
+            else:
+                self.inverter_recorded_at = ""
         else:
             self.inverter_error = "No data returned from inverter"
+            self.inverter_recorded_at = ""
 
     @rx.event(background=True)
     async def load_inverter_stats(self):
@@ -1262,167 +847,180 @@ class AppState(rx.State):
         separate polling loop.
         """
         async with self:
+            if self.today_poll_running:
+                return
+            self.today_poll_running = True
             self.today_loading = True
 
         last_strategy_valid_until: str = self.strategy_valid_until
         last_known_date: date | None = None
 
-        while True:
-            async with self:
-                if not self.current_user:
-                    self.today_loading = False
-                    return
+        try:
+            while True:
+                async with self:
+                    if not self.current_user:
+                        self.today_loading = False
+                        return
 
-            poll_interval = 30
-            try:
-                config = _get_config()
-                tz = ZoneInfo(config.app.timezone)
-                today_local = datetime.now(tz).date()
+                poll_interval = 30
+                try:
+                    config = _get_config()
+                    tz = ZoneInfo(config.app.timezone)
+                    today_local = datetime.now(tz).date()
 
-                # Detect date rollover — reset today's data so stale figures don't linger
-                if last_known_date is not None and today_local != last_known_date:
-                    async with self:
-                        self.battery_soc_pct = 0.0
-                        self.battery_soc_kwh = 0.0
-                        self.solar_today_kwh = 0.0
-                        self.grid_import_today_kwh = 0.0
-                        self.grid_export_today_kwh = 0.0
-                        self.grid_cost_gbp = 0.0
-                        self.grid_export_revenue_gbp = 0.0
-                        self.net_daily_cost_gbp = 0.0
-                        self.current_rate_p = 0.0
-                        self.current_export_rate_p = 0.0
-                        self.today_chart_data = []
-                        self.today_price_data = []
-                        self.today_error = ""
-                        self.today_weather_code = -1
-                        self.today_weather_max_temp_c = 0.0
-                last_known_date = today_local
-
-                snapshot = await asyncio.to_thread(load_today_snapshot)
-
-                if snapshot:
-                    # Ignore snapshots written before today (worker hasn't ticked yet)
-                    fetched_at_str = snapshot.get("fetched_at", "")
-                    if fetched_at_str:
-                        fetched_date = datetime.fromisoformat(fetched_at_str).astimezone(tz).date()
-                        if fetched_date < today_local:
-                            snapshot = None
-
-                if snapshot:
-                    if snapshot.get("error"):
+                    # Detect date rollover — reset today's data so stale figures don't linger
+                    if last_known_date is not None and today_local != last_known_date:
                         async with self:
-                            self.today_error = snapshot["error"]
-                            self.today_loading = False
-                    else:
-                        async with self:
-                            self.battery_soc_pct = snapshot.get("battery_soc_pct", 0.0)
-                            self.battery_soc_kwh = snapshot.get("battery_soc_kwh", 0.0)
-                            self.solar_today_kwh = snapshot.get("solar_today_kwh", 0.0)
-                            self.grid_import_today_kwh = snapshot.get("grid_import_today_kwh", 0.0)
-                            self.grid_export_today_kwh = snapshot.get("grid_export_today_kwh", 0.0)
-                            self.grid_cost_gbp = snapshot.get("grid_cost_gbp", 0.0)
-                            self.grid_export_revenue_gbp = snapshot.get("grid_export_revenue_gbp", 0.0)
-                            self.net_daily_cost_gbp = snapshot.get("net_daily_cost_gbp", 0.0)
-                            self.standing_charge_p_per_day = snapshot.get("standing_charge_p_per_day", 0.0)
-                            self.current_rate_p = snapshot.get("current_rate_p", 0.0)
-                            self.current_export_rate_p = snapshot.get("current_export_rate_p", 0.0)
-                            self.today_chart_data = snapshot.get("chart_data", [])
-                            self.today_price_data = snapshot.get("price_data", [])
+                            self.battery_soc_pct = 0.0
+                            self.battery_soc_kwh = 0.0
+                            self.solar_today_kwh = 0.0
+                            self.grid_import_today_kwh = 0.0
+                            self.grid_export_today_kwh = 0.0
+                            self.grid_cost_gbp = 0.0
+                            self.grid_export_revenue_gbp = 0.0
+                            self.net_daily_cost_gbp = 0.0
+                            self.current_rate_p = 0.0
+                            self.current_export_rate_p = 0.0
+                            self.today_chart_data = []
+                            self.today_price_data = []
                             self.today_error = ""
-                            self.today_loading = False
+                            self.today_weather_code = -1
+                            self.today_weather_max_temp_c = 0.0
+                    last_known_date = today_local
 
-                else:
+                    snapshot = await asyncio.to_thread(load_today_snapshot)
+
+                    if snapshot:
+                        # Ignore snapshots written before today (worker hasn't ticked yet)
+                        fetched_at_str = snapshot.get("fetched_at", "")
+                        if fetched_at_str:
+                            fetched_date = datetime.fromisoformat(fetched_at_str).astimezone(tz).date()
+                            if fetched_date < today_local:
+                                snapshot = None
+
+                    if snapshot:
+                        if snapshot.get("error"):
+                            async with self:
+                                self.today_error = snapshot["error"]
+                                self.today_loading = False
+                        else:
+                            async with self:
+                                self.battery_soc_pct = snapshot.get("battery_soc_pct", 0.0)
+                                self.battery_soc_kwh = snapshot.get("battery_soc_kwh", 0.0)
+                                self.solar_today_kwh = snapshot.get("solar_today_kwh", 0.0)
+                                self.grid_import_today_kwh = snapshot.get("grid_import_today_kwh", 0.0)
+                                self.grid_export_today_kwh = snapshot.get("grid_export_today_kwh", 0.0)
+                                self.grid_cost_gbp = snapshot.get("grid_cost_gbp", 0.0)
+                                self.grid_export_revenue_gbp = snapshot.get("grid_export_revenue_gbp", 0.0)
+                                self.net_daily_cost_gbp = snapshot.get("net_daily_cost_gbp", 0.0)
+                                self.standing_charge_p_per_day = snapshot.get("standing_charge_p_per_day", 0.0)
+                                self.current_rate_p = snapshot.get("current_rate_p", 0.0)
+                                self.current_export_rate_p = snapshot.get("current_export_rate_p", 0.0)
+                                self.today_chart_data = snapshot.get("chart_data", [])
+                                self.today_price_data = snapshot.get("price_data", [])
+                                self.today_error = ""
+                                self.today_loading = False
+
+                    else:
                     # Worker not running — fall back to a direct fetch so dev / standalone
                     # mode still works.
-                    poll_interval = 300
-                    try:
-                        sc = await asyncio.to_thread(fetch_standing_charge_p_per_day, config)
-                    except Exception:
-                        sc = config.octopus.standing_charge_p_per_day
-                    try:
-                        today_data = await asyncio.to_thread(get_today_live_data, config)
-                        load_profile = await asyncio.to_thread(build_load_profile, config, today_local)
-                        solar_forecast = load_solar_forecast_today(config, today_local.isoformat())
-                        if solar_forecast is None:
-                            try:
-                                slots = await asyncio.to_thread(fetch_solar_forecast, config, today_local)
-                                await asyncio.to_thread(save_solar_forecast_today, config, slots, today_local.isoformat())
-                                solar_forecast = slots
-                            except Exception as exc:
-                                import logging as _log
-                                _log.getLogger(__name__).warning("solar forecast fetch failed in fallback: %s", exc)
-                        solar_forecast = solar_forecast or [0.0] * 48
-                        timestamps = today_data.timestamps
-                        chart_rows = []
-                        for i in range(48):
-                            chart_rows.append({
-                                "time": timestamps[i],
-                                "grid_import": round(today_data.actual_grid_import[i] or 0.0, 3),
-                                "grid_export": round(today_data.actual_grid_export[i] or 0.0, 3),
-                                "solar": round(today_data.actual_solar[i] or 0.0, 3),
-                                "predicted_solar": round(solar_forecast[i], 3),
-                                "soc_pct": (
-                                    (today_data.actual_battery_soc_kwh[i] or 0.0) / config.battery.capacity_kwh * 100
-                                    if today_data.actual_battery_soc_kwh[i] is not None else None
-                                ),
-                                "predicted_usage": load_profile[i],
-                                "is_actual": i <= today_data.last_data_slot,
-                            })
-                        price_rows = [
-                            {"time": timestamps[i], "import": today_data.agile_prices[i], "export": today_data.export_prices[i]}
-                            for i in range(48)
-                        ]
-                        async with self:
-                            self.battery_soc_pct = round(today_data.battery_soc_pct, 1)
-                            self.battery_soc_kwh = round(today_data.battery_soc_kwh, 1)
-                            self.solar_today_kwh = round(today_data.solar_today_kwh, 2)
-                            self.grid_import_today_kwh = round(sum(v for v in today_data.actual_grid_import if v is not None), 2)
-                            self.grid_export_today_kwh = round(sum(v for v in today_data.actual_grid_export if v is not None), 2)
-                            self.grid_cost_gbp = round(today_data.grid_cost_pence / 100, 2)
-                            self.grid_export_revenue_gbp = round(today_data.grid_export_revenue_pence / 100, 2)
-                            self.net_daily_cost_gbp = round((today_data.grid_cost_pence - today_data.grid_export_revenue_pence + sc) / 100, 2)
-                            self.standing_charge_p_per_day = sc
-                            self.current_rate_p = round(today_data.current_rate_p, 1)
-                            self.current_export_rate_p = round(today_data.current_export_rate_p, 1)
-                            self.today_chart_data = chart_rows
-                            self.today_price_data = price_rows
-                            self.today_error = ""
-                            self.today_loading = False
-                    except Exception as exc:
-                        async with self:
-                            self.today_error = str(exc)
-                            self.today_loading = False
+                        poll_interval = 300
+                        try:
+                            sc = await asyncio.to_thread(fetch_standing_charge_p_per_day, config)
+                        except Exception:
+                            sc = config.octopus.standing_charge_p_per_day
+                        try:
+                            today_data = await asyncio.to_thread(get_today_live_data, config)
+                            load_profile = await asyncio.to_thread(build_load_profile, config, today_local)
+                            solar_forecast = load_solar_forecast_today(config, today_local.isoformat())
+                            if solar_forecast is None:
+                                try:
+                                    slots = await asyncio.to_thread(fetch_solar_forecast, config, today_local)
+                                    await asyncio.to_thread(save_solar_forecast_today, config, slots, today_local.isoformat())
+                                    solar_forecast = slots
+                                except Exception as exc:
+                                    import logging as _log
+                                    _log.getLogger(__name__).warning("solar forecast fetch failed in fallback: %s", exc)
+                            solar_forecast = solar_forecast or [0.0] * 48
+                            timestamps = today_data.timestamps
+                            chart_rows = []
+                            for i in range(48):
+                                chart_rows.append({
+                                    "time": timestamps[i],
+                                    "grid_import": round(today_data.actual_grid_import[i] or 0.0, 3),
+                                    "grid_export": round(today_data.actual_grid_export[i] or 0.0, 3),
+                                    "solar": round(today_data.actual_solar[i] or 0.0, 3),
+                                    "predicted_solar": round(solar_forecast[i], 3),
+                                    "soc_pct": (
+                                        (today_data.actual_battery_soc_kwh[i] or 0.0) / config.battery.capacity_kwh * 100
+                                        if today_data.actual_battery_soc_kwh[i] is not None else None
+                                    ),
+                                    "predicted_usage": load_profile[i],
+                                    "is_actual": i <= today_data.last_data_slot,
+                                })
+                            price_rows = [
+                                {"time": timestamps[i], "import": today_data.agile_prices[i], "export": today_data.export_prices[i]}
+                                for i in range(48)
+                            ]
+                            async with self:
+                                self.battery_soc_pct = round(today_data.battery_soc_pct, 1)
+                                self.battery_soc_kwh = round(today_data.battery_soc_kwh, 1)
+                                self.solar_today_kwh = round(today_data.solar_today_kwh, 2)
+                                self.grid_import_today_kwh = round(sum(v for v in today_data.actual_grid_import if v is not None), 2)
+                                self.grid_export_today_kwh = round(sum(v for v in today_data.actual_grid_export if v is not None), 2)
+                                self.grid_cost_gbp = round(today_data.grid_cost_pence / 100, 2)
+                                self.grid_export_revenue_gbp = round(today_data.grid_export_revenue_pence / 100, 2)
+                                self.net_daily_cost_gbp = round((today_data.grid_cost_pence - today_data.grid_export_revenue_pence + sc) / 100, 2)
+                                self.standing_charge_p_per_day = sc
+                                self.current_rate_p = round(today_data.current_rate_p, 1)
+                                self.current_export_rate_p = round(today_data.current_export_rate_p, 1)
+                                self.today_chart_data = chart_rows
+                                self.today_price_data = price_rows
+                                self.today_error = ""
+                                self.today_loading = False
+                        except Exception as exc:
+                            async with self:
+                                self.today_error = str(exc)
+                                self.today_loading = False
 
-                # Fetch today's weather once per day
-                async with self:
-                    need_weather = self.today_weather_code < 0
-                if need_weather:
-                    try:
-                        code, max_temp = await asyncio.to_thread(fetch_today_weather, config)
-                        async with self:
-                            self.today_weather_code = code
-                            self.today_weather_max_temp_c = max_temp
-                    except Exception as exc:
-                        import logging as _wlog
-                        _wlog.getLogger(__name__).warning("weather fetch failed: %s", exc)
-
-                # Pick up strategy updates written by the worker without a separate loop
-                cached = await asyncio.to_thread(load_strategy)
-                if cached and cached.valid_until != last_strategy_valid_until:
-                    last_strategy_valid_until = cached.valid_until
+                    # Fetch today's weather once per day
                     async with self:
-                        self._apply_strategy(cached)
-                    valid_str = datetime.fromisoformat(cached.valid_until).strftime("%H:%M %d %b")
-                    yield rx.toast.success(
-                        f"Strategy updated — valid until {valid_str}, estimated cost £{cached.estimated_cost_gbp:.2f}",
-                        duration=0,
-                        close_button=True,
-                    )
+                        need_weather = self.today_weather_code < 0
+                    if need_weather:
+                        try:
+                            code, max_temp = await asyncio.to_thread(fetch_today_weather, config)
+                            async with self:
+                                self.today_weather_code = code
+                                self.today_weather_max_temp_c = max_temp
+                        except Exception as exc:
+                            import logging as _wlog
+                            _wlog.getLogger(__name__).warning("weather fetch failed: %s", exc)
 
-            except Exception as exc:
-                # Catch-all so the polling loop never dies silently
-                import logging as _logging
-                _logging.getLogger(__name__).error("refresh_today_data loop error: %s", exc, exc_info=True)
+                    # Pick up strategy updates written by the worker without a separate loop
+                    cached = await asyncio.to_thread(load_strategy)
+                    if cached and cached.valid_until != last_strategy_valid_until:
+                        last_strategy_valid_until = cached.valid_until
+                        async with self:
+                            self._apply_strategy(cached)
+                        valid_str = datetime.fromisoformat(cached.valid_until).strftime("%H:%M %d %b")
+                        yield rx.toast.success(
+                            f"Strategy updated — valid until {valid_str}, estimated cost £{cached.estimated_cost_gbp:.2f}",
+                            duration=0,
+                            close_button=True,
+                        )
 
-            await asyncio.sleep(poll_interval)
+                except Exception as exc:
+                    # Catch-all so the polling loop never dies silently
+                    import logging as _logging
+                    _logging.getLogger(__name__).error("refresh_today_data loop error: %s", exc, exc_info=True)
+
+                await asyncio.sleep(poll_interval)
+        finally:
+            async with self:
+                self.today_poll_running = False
+
+    @rx.event
+    def restart_today_polling(self):
+        self.today_poll_running = False
+        self.today_loading = False
+        return AppState.refresh_today_data
