@@ -38,6 +38,7 @@ def _prices_published(agile_tomorrow: list[float]) -> bool:
 class AppState(AuthState):
     # Navigation
     current_page: str = "today"
+    sidebar_collapsed: bool = False
 
     # Tomorrow strategy
     strategy_periods: list[dict] = []
@@ -350,6 +351,10 @@ class AppState(AuthState):
             self.admin_form_error = ""
         if page == "today":
             return AppState.refresh_today_data
+
+    @rx.event
+    def toggle_sidebar(self):
+        self.sidebar_collapsed = not self.sidebar_collapsed
 
     @rx.event
     def set_history_start(self, value: str):
