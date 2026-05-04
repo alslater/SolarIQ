@@ -30,6 +30,8 @@ timezone = Europe/London
 refresh_time = 16:15
 cache_dir = /tmp/solariq-cache
 auth_db_path = /app/data/auth.sqlite3
+# Set to true when serving over HTTPS (recommended in production).
+auth_cookie_secure = false
 # log_file = /app/logs/solariq.log   # uncomment to write logs to a file
 log_level = INFO
 # test_strategy_mode = true           # substitutes today's rates for tomorrow's; bypasses the published-prices gate

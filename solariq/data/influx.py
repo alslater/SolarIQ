@@ -421,12 +421,10 @@ def get_latest_inverter_stats(config: SolarIQConfig) -> dict | None:
     )
     try:
         result = client.query(
-            "SELECT LAST(pvpower) AS pvpower, LAST(feedin) AS feedin, "
-            "LAST(power_in) AS power_in, LAST(power_out) AS power_out, "
-            "LAST(battery_power) AS battery_power, LAST(usage) AS usage, "
-            "LAST(soc) AS soc, LAST(battery_temp) AS battery_temp, "
-            "LAST(inverter_temp) AS inverter_temp, LAST(grid_voltage) AS grid_voltage "
-            "FROM solaxdata"
+            "SELECT pvpower, feedin, power_in, power_out, "
+            "battery_power, usage, soc, battery_temp, inverter_temp, grid_voltage "
+            "FROM solaxdata "
+            "ORDER BY time DESC LIMIT 1"
         )
         points = list(result.get_points())
         if not points:

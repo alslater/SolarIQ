@@ -20,6 +20,37 @@ def _section_heading(text: str) -> rx.Component:
 
 def today_tab() -> rx.Component:
     return rx.vstack(
+        rx.hstack(
+            rx.cond(
+                AppState.today_loading,
+                rx.hstack(
+                    rx.spinner(size="1"),
+                    rx.text("Refreshing today data...", style={"font_size": "12px", "color": t.MUTED}),
+                    spacing="2",
+                    align="center",
+                ),
+                rx.fragment(),
+            ),
+            rx.spacer(),
+            rx.button(
+                "Refresh",
+                on_click=AppState.restart_today_polling,
+                style={
+                    "background": "transparent",
+                    "color": t.MUTED,
+                    "border": f"1px solid {t.BORDER}",
+                    "border_radius": "6px",
+                    "padding": "6px 12px",
+                    "font_size": "12px",
+                    "font_weight": "600",
+                    "cursor": "pointer",
+                    "_hover": {"border_color": t.PRIMARY, "color": t.FG},
+                },
+            ),
+            width="100%",
+            align="center",
+            margin_bottom="8px",
+        ),
         # Error message
         rx.cond(
             AppState.today_error != "",
@@ -153,4 +184,5 @@ def today_tab() -> rx.Component:
         width="100%",
         padding="6",
         style={"background": t.BG},
+        on_mount=AppState.restart_today_polling,
     )
