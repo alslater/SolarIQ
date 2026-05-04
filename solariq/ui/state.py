@@ -53,6 +53,7 @@ class AppState(AuthState):
     show_self_use_implicit: bool = True
     show_self_use_explicit: bool = True
     show_charge: bool = True
+    sort_strategy_by_time: bool = False
 
     # Tomorrow charts
     tomorrow_price_data: list[dict] = []
@@ -643,7 +644,9 @@ class AppState(AuthState):
             close_button=True,
         )
 
-    def _apply_strategy(self, result) -> None:
+    def _apply_strategy(self, result, capacity_kwh: float = 0.0) -> None:
+        if not capacity_kwh:
+            capacity_kwh = _get_config().battery.capacity_kwh
         self.strategy_periods = [p.to_dict() for p in result.periods]
         self.estimated_cost_gbp = round(result.estimated_cost_gbp, 2)
         self.solar_forecast_kwh = round(result.solar_forecast_kwh, 1)
@@ -698,7 +701,11 @@ class AppState(AuthState):
                 }
             )
         self.tomorrow_solar_data = [
-            {"time": timestamps[t], "solar": result.solar_forecast[t], "soc_kwh": result.battery_soc_forecast[t]}
+            {
+                "time": timestamps[t],
+                "solar": result.solar_forecast[t],
+                "soc_pct": round(result.battery_soc_forecast[t] / capacity_kwh * 100, 1) if capacity_kwh else 0.0,
+            }
             for t in range(48)
         ]
 
@@ -732,6 +739,8 @@ class AppState(AuthState):
                     filtered.append(period)
                 if (not is_default) and self.show_self_use_explicit:
                     filtered.append(period)
+        if self.sort_strategy_by_time:
+            filtered = sorted(filtered, key=lambda p: p.get("start_time", ""))
         return filtered
 
     @rx.event
@@ -745,6 +754,11 @@ class AppState(AuthState):
     @rx.event
     def toggle_show_charge(self):
         self.show_charge = not self.show_charge
+
+    @rx.event
+    def toggle_sort_strategy_by_time(self):
+        self.sort_strategy_by_time = not self.sort_strategy_by_time
+
     @rx.event(background=True)
     async def refresh_strategy(self):
         async with self:
@@ -821,7 +835,7 @@ class AppState(AuthState):
             await asyncio.to_thread(save_strategy, result)
 
             async with self:
-                self._apply_strategy(result)
+                self._apply_strategy(result, config.battery.capacity_kwh)
                 self.strategy_loading = False
 
             valid_dt = datetime.fromisoformat(result.valid_until)
@@ -1001,7 +1015,7 @@ class AppState(AuthState):
                     if cached and cached.valid_until != last_strategy_valid_until:
                         last_strategy_valid_until = cached.valid_until
                         async with self:
-                            self._apply_strategy(cached)
+                            self._apply_strategy(cached, config.battery.capacity_kwh)
                         valid_str = datetime.fromisoformat(cached.valid_until).strftime("%H:%M %d %b")
                         yield rx.toast.success(
                             f"Strategy updated — valid until {valid_str}, estimated cost £{cached.estimated_cost_gbp:.2f}",

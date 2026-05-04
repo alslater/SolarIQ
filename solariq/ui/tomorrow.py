@@ -158,6 +158,24 @@ def tomorrow_tab() -> rx.Component:
                         variant=rx.cond(AppState.show_charge, "solid", "soft"),
                         style={"font_size": "11px", "cursor": "pointer"},
                     ),
+                    rx.separator(orientation="vertical", style={"height": "16px"}),
+                    rx.text(
+                        "Sort:",
+                        style={
+                            "font_size": "11px",
+                            "font_weight": "600",
+                            "color": t.MUTED,
+                            "text_transform": "uppercase",
+                            "letter_spacing": "0.06em",
+                        },
+                    ),
+                    rx.button(
+                        "By Start Time",
+                        on_click=AppState.toggle_sort_strategy_by_time,
+                        size="1",
+                        variant=rx.cond(AppState.sort_strategy_by_time, "solid", "soft"),
+                        style={"font_size": "11px", "cursor": "pointer"},
+                    ),
                     spacing="2",
                     align="center",
                     width="100%",
@@ -208,13 +226,13 @@ def tomorrow_tab() -> rx.Component:
                 style={**t.CARD_STYLE, "padding": "20px"},
             ),
             rx.box(
-                _section_heading("Solar Forecast & Battery SOC (kWh)"),
+                _section_heading("Solar Forecast & Battery SOC (%)"),
                 rx.recharts.composed_chart(
                     rx.recharts.cartesian_grid(stroke_dasharray="3 3", stroke=t.CHART_GRID),
                     rx.recharts.bar(data_key="solar", name="Solar kWh", fill=t.CHART_SOLAR, radius=[2, 2, 0, 0]),
                     rx.recharts.line(
-                        data_key="soc_kwh",
-                        name="Battery SOC kWh",
+                        data_key="soc_pct",
+                        name="Battery SOC %",
                         stroke=t.CHART_EXPORT,
                         stroke_width=2,
                         dot=False,

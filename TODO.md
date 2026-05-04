@@ -16,12 +16,15 @@
     * Delete TOU
     * Apply TOU
 
-4. Show solar forecast vs PV on historical graphs
+4. On strategy page highlight non-considered slots or don't show them.  Not sure this is an issue any more now we have a rolling 48 slot strategy.
 
-5. On strategy page show soc as %
+5. On strategy page, provide some way of dismissing errors.
 
-6. On strategy page highlight non-considered slots or don't show them.
+6. Not entirely sure about time alignment of the solar forecast, it does not look right comparing with the website, see (https://toolkit.solcast.com.au/home-pv-system/96f5-db62-fe5d-dd53/detail)
 
-7. On strategy page, provide some way of dismissing errors.
-
-8. Not entirely sure about time alignment of the solar forecast, it does not look right comparing with the website, see (https://toolkit.solcast.com.au/home-pv-system/96f5-db62-fe5d-dd53/detail)
+7. Dashlane / Edge password manager injection causes React hydration error #418 on the login page.
+   - Dashlane injects DOM nodes into password inputs before React hydrates, triggering a server/client mismatch.
+   - CSS audit showed no stylesheet conflicts from our side.
+   - `autocomplete` token hints were added via `custom_attrs` (Reflex does not support string `auto_complete`).
+   - Attempts so far: autocomplete hints, `auth_ready=False` SSR guard (caused spinning regression, reverted).
+   - Next steps to investigate: render login/bootstrap forms client-side only (post-mount flag), or use a Reflex `rx.client_side_only` wrapper if available in a future version.

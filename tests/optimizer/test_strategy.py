@@ -2,7 +2,7 @@ import pytest
 from datetime import datetime
 from zoneinfo import ZoneInfo
 from solariq.config import load_config
-from solariq.optimizer.strategy import build_strategy_periods, _slot_to_time, build_rolling_window, current_window_start
+from solariq.optimizer.strategy import build_strategy_periods, _slot_to_time, _midnight_slot, build_rolling_window, current_window_start
 
 SLOTS = 48
 
@@ -186,3 +186,110 @@ def test_build_strategy_periods_end_sentinel_with_window_start(config):
     periods = build_strategy_periods(charge_mode, soc, prices, config, window_start=window_start)
     # Full window ends at 18:00 next day
     assert periods[-1].end_time == "18:00"
+
+
+def test_charge_block_crossing_midnight_is_split(config):
+    """A charge block that spans midnight is split into two periods at 00:00."""
+    tz = ZoneInfo("Europe/London")
+    # Window starts at 22:00; midnight falls at slot 4 (22:00 + 4*30min = 00:00)
+    window_start = datetime(2026, 4, 1, 22, 0, tzinfo=tz)
+    # Charge from slot 2 (23:00) to slot 6 (01:00) crosses midnight at slot 4
+    charge_mode = [False] * 2 + [True] * 4 + [False] * 42
+    soc = [10.0] * 2 + [11.0, 12.0, 13.0, 14.0] + [14.0] * 42
+    prices = [10.0] * SLOTS
+    periods = build_strategy_periods(charge_mode, soc, prices, config, window_start=window_start)
+    charge_periods = [p for p in periods if p.mode == "Charge"]
+    assert len(charge_periods) == 2
+    assert charge_periods[0].start_time == "23:00"
+    assert charge_periods[0].end_time == "00:00"
+    assert charge_periods[1].start_time == "00:00"
+    assert charge_periods[1].end_time == "01:00"
+
+
+def test_self_use_block_crossing_midnight_is_split(config):
+    """A self-use block spanning midnight is also split at 00:00."""
+    tz = ZoneInfo("Europe/London")
+    # Window starts at 23:00; midnight at slot 2 (23:00 + 2*30min = 00:00)
+    window_start = datetime(2026, 4, 1, 23, 0, tzinfo=tz)
+    charge_mode = [False] * SLOTS
+    soc = [10.0] * SLOTS
+    prices = [10.0] * SLOTS
+    periods = build_strategy_periods(charge_mode, soc, prices, config, window_start=window_start)
+    # The single self-use block must have been split at midnight
+    times = [(p.start_time, p.end_time) for p in periods]
+    assert ("23:00", "00:00") in times
+    assert any(p.start_time == "00:00" for p in periods)
+
+
+def test_block_not_crossing_midnight_is_not_split(config):
+    """A charge block fully before midnight is not split."""
+    tz = ZoneInfo("Europe/London")
+    # Window starts at 22:00; midnight at slot 4
+    window_start = datetime(2026, 4, 1, 22, 0, tzinfo=tz)
+    # Charge from slot 0 (22:00) to slot 3 (23:30) — fully before midnight
+    charge_mode = [True] * 3 + [False] * 45
+    soc = [10.0, 12.0, 14.0] + [14.0] * 45
+    prices = [10.0] * SLOTS
+    periods = build_strategy_periods(charge_mode, soc, prices, config, window_start=window_start)
+    charge_periods = [p for p in periods if p.mode == "Charge"]
+    assert len(charge_periods) == 1
+    assert charge_periods[0].start_time == "22:00"
+    assert charge_periods[0].end_time == "23:30"
+
+
+def test_no_midnight_split_when_window_start_none(config):
+    """Without window_start, midnight-split logic is skipped."""
+    charge_mode = [True] * 4 + [False] * 44
+    soc = [10.0, 11.0, 12.0, 13.0] + [13.0] * 44
+    prices = [10.0] * SLOTS
+    periods = build_strategy_periods(charge_mode, soc, prices, config)
+    charge_periods = [p for p in periods if p.mode == "Charge"]
+    assert len(charge_periods) == 1
+
+
+def test_midnight_slot_returns_none_when_window_starts_at_midnight():
+    """_midnight_slot returns None when window_start is exactly at midnight.
+
+    Midnight lands at delta=0, which maps to slot 0, outside [1, SLOTS-1],
+    so no split should occur and the full window is treated as a single day.
+    """
+    tz = ZoneInfo("Europe/London")
+    window_start = datetime(2026, 4, 2, 0, 0, tzinfo=tz)
+    assert _midnight_slot(window_start) is None
+
+
+def test_no_split_when_window_starts_at_midnight(config):
+    """When window_start is midnight, build_strategy_periods does not split blocks."""
+    tz = ZoneInfo("Europe/London")
+    window_start = datetime(2026, 4, 2, 0, 0, tzinfo=tz)
+    # Charge from slot 0 (00:00) through slot 5 (02:30) — would cross a spurious
+    # midnight if slot 0 were mistakenly treated as a split point.
+    charge_mode = [True] * 6 + [False] * 42
+    soc = [10.0, 11.0, 12.0, 13.0, 14.0, 15.0] + [15.0] * 42
+    prices = [10.0] * SLOTS
+    periods = build_strategy_periods(charge_mode, soc, prices, config, window_start=window_start)
+    charge_periods = [p for p in periods if p.mode == "Charge"]
+    assert len(charge_periods) == 1
+    assert charge_periods[0].start_time == "00:00"
+    assert charge_periods[0].end_time == "03:00"
+
+
+def test_no_split_when_midnight_falls_on_block_boundary(config):
+    """When midnight coincides with the boundary between two blocks, no extra split occurs.
+
+    bstart < mid < bend is the split condition; if mid == bstart or mid == bend
+    the block is left unchanged (the boundary is already correct).
+    """
+    tz = ZoneInfo("Europe/London")
+    # Window starts at 22:00; midnight falls at slot 4 (00:00).
+    # Charge block ends exactly at slot 4 — boundary aligns with midnight.
+    window_start = datetime(2026, 4, 1, 22, 0, tzinfo=tz)
+    charge_mode = [True] * 4 + [False] * 44   # charge 22:00-00:00, self-use 00:00-22:00
+    soc = [10.0, 12.0, 14.0, 16.0] + [16.0] * 44
+    prices = [10.0] * SLOTS
+    periods = build_strategy_periods(charge_mode, soc, prices, config, window_start=window_start)
+    charge_periods = [p for p in periods if p.mode == "Charge"]
+    # Block ends at midnight — no split needed, still exactly one charge period
+    assert len(charge_periods) == 1
+    assert charge_periods[0].start_time == "22:00"
+    assert charge_periods[0].end_time == "00:00"

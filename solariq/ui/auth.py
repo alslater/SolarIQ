@@ -4,7 +4,16 @@ from solariq.ui import theme as t
 from solariq.ui.state import AppState
 
 
-def _field(label: str, on_change, *, value=None, placeholder: str = "", password: bool = False) -> rx.Component:
+def _field(
+    label: str,
+    on_change,
+    *,
+    value=None,
+    placeholder: str = "",
+    password: bool = False,
+    autocomplete: str | None = None,
+    name: str | None = None,
+) -> rx.Component:
     return rx.vstack(
         rx.text(
             label,
@@ -20,6 +29,8 @@ def _field(label: str, on_change, *, value=None, placeholder: str = "", password
             on_change=on_change,
             placeholder=placeholder,
             type="password" if password else "text",
+            name=name,
+            custom_attrs=({"autocomplete": autocomplete} if autocomplete is not None else {}),
             **({"value": value} if value is not None else {}),
             style={
                 "width": "100%",
@@ -53,8 +64,21 @@ def login_view() -> rx.Component:
                     "Use your SolarIQ username and password.",
                     style={"font_size": "14px", "color": t.MUTED},
                 ),
-                _field("Username", AppState.set_login_username, value=AppState.login_username, placeholder="admin"),
-                _field("Password", AppState.set_login_password, password=True),
+                _field(
+                    "Username",
+                    AppState.set_login_username,
+                    value=AppState.login_username,
+                    placeholder="admin",
+                    autocomplete="username",
+                    name="username",
+                ),
+                _field(
+                    "Password",
+                    AppState.set_login_password,
+                    password=True,
+                    autocomplete="current-password",
+                    name="password",
+                ),
                 rx.cond(
                     AppState.auth_error != "",
                     rx.text(AppState.auth_error, style={"color": t.FAIL, "font_size": "13px"}),
@@ -109,12 +133,27 @@ def bootstrap_view() -> rx.Component:
                     "No users were found. This account will be created as an administrator.",
                     style={"font_size": "14px", "color": t.MUTED},
                 ),
-                _field("Username", AppState.set_setup_username, value=AppState.setup_username, placeholder="admin"),
-                _field("Password", AppState.set_setup_password, password=True),
+                _field(
+                    "Username",
+                    AppState.set_setup_username,
+                    value=AppState.setup_username,
+                    placeholder="admin",
+                    autocomplete="off",
+                    name="username",
+                ),
+                _field(
+                    "Password",
+                    AppState.set_setup_password,
+                    password=True,
+                    autocomplete="off",
+                    name="password",
+                ),
                 _field(
                     "Confirm password",
                     AppState.set_setup_password_confirm,
                     password=True,
+                    autocomplete="off",
+                    name="confirm-password",
                 ),
                 rx.cond(
                     AppState.auth_error != "",
