@@ -4,26 +4,6 @@ from zoneinfo import ZoneInfo
 
 import reflex as rx
 
-from solariq.auth import (
-    PASSWORD_MIN_LENGTH,
-    authenticate_user,
-    change_password,
-    create_session,
-    create_user,
-    create_user_as_admin,
-    delete_user_as_admin,
-    get_session_user,
-    get_user_by_username,
-    has_admin_users,
-    has_users,
-    init_auth_db,
-    invalidate_session,
-    list_users,
-    list_users_with_roles,
-    promote_user_to_admin,
-    set_user_admin_role_as_admin,
-    validate_password_strength,
-)
 from solariq.cache import (
     get_cache_paths,
     load_calibration,
@@ -34,25 +14,15 @@ from solariq.cache import (
     save_solar_forecast_today,
     save_strategy,
 )
-from solariq.config import load_config, SolarIQConfig
-from solariq.logging_config import setup_logging
+from solariq.config import SolarIQConfig
 from solariq.data.influx import get_today_live_data, get_historical_range_data, get_latest_inverter_stats
 from solariq.data.load_profile import build_load_profile
 from solariq.data.octopus import fetch_agile_prices, fetch_export_prices, fetch_standing_charge_p_per_day, fetch_total_standing_charge_gbp, fill_unpublished_slots
 from solariq.data.solcast import fetch_solar_forecast
 from solariq.data.weather import fetch_today_weather
 from solariq.optimizer.solver import solve
-
-_config: SolarIQConfig | None = None
-
-
-def _get_config() -> SolarIQConfig:
-    global _config
-    if _config is None:
-        _config = load_config()
-        setup_logging(_config.app.log_file, _config.app.log_level)
-    return _config
-
+from solariq.ui.auth_state import AuthState
+from solariq.ui.state_common import get_config as _get_config
 
 def _tomorrow(config: SolarIQConfig) -> date:
     tz = ZoneInfo(config.app.timezone)
@@ -65,44 +35,7 @@ def _prices_published(agile_tomorrow: list[float]) -> bool:
     return not all(p >= UNPUBLISHED_RATE_CAP_P for p in agile_tomorrow)
 
 
-class AppState(rx.State):
-    # Authentication
-    auth_token: str = rx.Cookie(
-        "",
-        name="solariq_auth_token",
-        path="/",
-        max_age=60 * 60 * 24 * 30,
-        same_site="lax",
-    )
-    auth_ready: bool = False
-    auth_users_exist: bool = False
-    current_user: str = ""
-    current_user_is_admin: bool = False
-    auth_error: str = ""
-    login_username: str = ""
-    login_password: str = ""
-    setup_username: str = ""
-    setup_password: str = ""
-    setup_password_confirm: str = ""
-    new_user_username: str = ""
-    new_user_password: str = ""
-    new_user_password_confirm: str = ""
-    new_user_is_admin: bool = False
-    current_password: str = ""
-    new_password: str = ""
-    new_password_confirm: str = ""
-    user_list: list[dict] = []
-    account_form_error: str = ""
-    account_form_message: str = ""
-    admin_form_error: str = ""
-    admin_form_message: str = ""
-    current_password_error: str = ""
-    new_password_error: str = ""
-    new_password_confirm_error: str = ""
-    new_user_username_error: str = ""
-    new_user_password_error: str = ""
-    new_user_password_confirm_error: str = ""
-
+class AppState(AuthState):
     # Navigation
     current_page: str = "today"
 
@@ -184,6 +117,26 @@ class AppState(rx.State):
     calibration_computed_at: str = ""
     calibration_octopus_kwh: float = 0.0
     calibration_influx_kwh: float = 0.0
+
+    def _post_auth_success_events(self) -> list:
+        return [
+            AppState.load_cached_strategy,
+            AppState.refresh_today_data,
+            AppState.load_cached_calibration,
+        ]
+
+    @rx.event
+    def login(self):
+        return self._login_impl()
+
+    @rx.event
+    def create_initial_user(self):
+        return self._create_initial_user_impl()
+
+    @rx.event
+    def on_load(self):
+        return self._on_load_impl()
+
     calibration_loading: bool = False
     calibration_error: str = ""
 
@@ -388,369 +341,12 @@ class AppState(rx.State):
         except Exception:
             return self.calibration_computed_at
 
-    @rx.var
-    def is_authenticated(self) -> bool:
-        return bool(self.current_user)
-
-    @rx.var
-    def needs_initial_user(self) -> bool:
-        return self.auth_ready and not self.auth_users_exist
-
-    @rx.event
-    def set_login_username(self, value: str):
-        self.login_username = value
-
-    @rx.event
-    def set_login_password(self, value: str):
-        self.login_password = value
-
-    @rx.event
-    def set_setup_username(self, value: str):
-        self.setup_username = value
-
-    @rx.event
-    def set_setup_password(self, value: str):
-        self.setup_password = value
-
-    @rx.event
-    def set_setup_password_confirm(self, value: str):
-        self.setup_password_confirm = value
-
-    @rx.event
-    def set_new_user_username(self, value: str):
-        self.new_user_username = value
-        self.new_user_username_error = ""
-        self.admin_form_error = ""
-        self.admin_form_message = ""
-
-    @rx.event
-    def set_new_user_password(self, value: str):
-        self.new_user_password = value
-        self.new_user_password_error = ""
-        self.admin_form_error = ""
-        self.admin_form_message = ""
-
-    @rx.event
-    def set_new_user_password_confirm(self, value: str):
-        self.new_user_password_confirm = value
-        self.new_user_password_confirm_error = ""
-        self.admin_form_error = ""
-        self.admin_form_message = ""
-
-    @rx.event
-    def set_new_user_is_admin(self, value: bool):
-        self.new_user_is_admin = bool(value)
-        self.admin_form_error = ""
-        self.admin_form_message = ""
-
-    @rx.event
-    def set_current_password(self, value: str):
-        self.current_password = value
-        self.current_password_error = ""
-        self.account_form_error = ""
-        self.account_form_message = ""
-
-    @rx.event
-    def set_new_password(self, value: str):
-        self.new_password = value
-        self.new_password_error = ""
-        self.account_form_error = ""
-        self.account_form_message = ""
-
-    @rx.event
-    def set_new_password_confirm(self, value: str):
-        self.new_password_confirm = value
-        self.new_password_confirm_error = ""
-        self.account_form_error = ""
-        self.account_form_message = ""
-
-    @rx.event
-    def refresh_user_list(self):
-        if not self.current_user or not self.current_user_is_admin:
-            self.user_list = []
-            return
-
-        db_path = _get_config().app.auth_db_path
-        self.user_list = list_users_with_roles(db_path)
-
-    @rx.event
-    def login(self):
-        db_path = _get_config().app.auth_db_path
-        init_auth_db(db_path)
-        self.auth_users_exist = has_users(db_path)
-        self.auth_error = ""
-
-        if not self.auth_users_exist:
-            self.auth_error = "No users exist yet. Create the first user to continue."
-            return
-
-        user = authenticate_user(db_path, self.login_username, self.login_password)
-        if user is None:
-            self.auth_error = "Invalid username or password."
-            return
-
-        recovered_admin = False
-        if not has_admin_users(db_path):
-            user = promote_user_to_admin(db_path, user.username)
-            recovered_admin = True
-
-        token = create_session(db_path, user.id)
-        self.auth_token = token
-        self.current_user = user.username
-        self.current_user_is_admin = user.is_admin
-        self.login_password = ""
-        self.auth_error = ""
-        self.refresh_user_list()
-
-        if recovered_admin:
-            return [
-                rx.toast.warning(
-                    "No administrators were found. This user has been promoted to admin.",
-                    duration=6000,
-                    close_button=True,
-                ),
-                AppState.load_cached_strategy,
-                AppState.refresh_today_data,
-                AppState.load_cached_calibration,
-            ]
-
-        return [AppState.load_cached_strategy, AppState.refresh_today_data, AppState.load_cached_calibration]
-
-    @rx.event
-    def logout(self):
-        db_path = _get_config().app.auth_db_path
-        invalidate_session(db_path, self.auth_token)
-
-        self.auth_token = ""
-        self.current_user = ""
-        self.current_user_is_admin = False
-        self.login_password = ""
-        self.current_page = "today"
-        self.user_list = []
-        self.account_form_error = ""
-        self.account_form_message = ""
-        self.admin_form_error = ""
-        self.admin_form_message = ""
-        self.current_password_error = ""
-        self.new_password_error = ""
-        self.new_password_confirm_error = ""
-        self.new_user_username_error = ""
-        self.new_user_password_error = ""
-        self.new_user_password_confirm_error = ""
-        self.inverter_poll_generation += 1
-
-    @rx.event
-    def create_initial_user(self):
-        db_path = _get_config().app.auth_db_path
-        init_auth_db(db_path)
-
-        if has_users(db_path):
-            self.auth_users_exist = True
-            self.auth_error = "A user already exists. Please sign in."
-            return
-
-        if self.setup_password != self.setup_password_confirm:
-            self.auth_error = "Passwords do not match."
-            return
-
-        try:
-            user = create_user(db_path, self.setup_username, self.setup_password, is_admin=True)
-        except ValueError as exc:
-            self.auth_error = str(exc)
-            return
-
-        token = create_session(db_path, user.id)
-        self.auth_token = token
-        self.current_user = user.username
-        self.current_user_is_admin = user.is_admin
-        self.auth_users_exist = True
-        self.auth_error = ""
-        self.setup_password = ""
-        self.setup_password_confirm = ""
-        self.refresh_user_list()
-
-        return [AppState.load_cached_strategy, AppState.refresh_today_data, AppState.load_cached_calibration]
-
-    @rx.event
-    def create_managed_user(self):
-        self.new_user_username_error = ""
-        self.new_user_password_error = ""
-        self.new_user_password_confirm_error = ""
-        self.admin_form_error = ""
-        self.admin_form_message = ""
-
-        if not self.current_user or not self.current_user_is_admin:
-            self.admin_form_error = "Only administrators can create users."
-            return
-
-        username = self.new_user_username.strip()
-        has_error = False
-        if len(username) < 3:
-            self.new_user_username_error = "Username must be at least 3 characters."
-            has_error = True
-        elif len(username) > 64:
-            self.new_user_username_error = "Username must be 64 characters or fewer."
-            has_error = True
-
-        password_error = validate_password_strength(self.new_user_password)
-        if password_error is not None:
-            self.new_user_password_error = password_error
-            has_error = True
-
-        if self.new_user_password != self.new_user_password_confirm:
-            self.new_user_password_confirm_error = "Passwords do not match."
-            has_error = True
-
-        if has_error:
-            return
-
-        db_path = _get_config().app.auth_db_path
-        try:
-            create_user_as_admin(
-                db_path,
-                self.current_user,
-                self.new_user_username,
-                self.new_user_password,
-                is_admin=self.new_user_is_admin,
-            )
-            self.admin_form_message = ""
-            self.new_user_username = ""
-            self.new_user_password = ""
-            self.new_user_password_confirm = ""
-            self.new_user_is_admin = False
-            self.user_list = list_users_with_roles(db_path)
-            return rx.toast.success(
-                "User created.",
-                duration=4000,
-                close_button=True,
-            )
-        except ValueError as exc:
-            message = str(exc)
-            if "username" in message.lower():
-                self.new_user_username_error = message
-            else:
-                self.admin_form_error = message
-
-    @rx.event
-    def delete_managed_user(self, username: str):
-        if not self.current_user or not self.current_user_is_admin:
-            self.admin_form_error = "Only administrators can delete users."
-            self.admin_form_message = ""
-            return
-
-        if username == self.current_user:
-            self.admin_form_error = "You cannot delete your own user."
-            self.admin_form_message = ""
-            return rx.toast.warning(
-                "You cannot delete your own user.",
-                duration=4000,
-                close_button=True,
-            )
-
-        db_path = _get_config().app.auth_db_path
-        try:
-            delete_user_as_admin(db_path, self.current_user, username)
-            self.admin_form_error = ""
-            self.admin_form_message = ""
-            self.user_list = list_users_with_roles(db_path)
-            return rx.toast.success(
-                f"Deleted user '{username}'.",
-                duration=4000,
-                close_button=True,
-            )
-        except ValueError as exc:
-            self.admin_form_error = str(exc)
-            self.admin_form_message = ""
-
-    @rx.event
-    def set_managed_user_admin_role(self, username: str, is_admin: bool):
-        if not self.current_user or not self.current_user_is_admin:
-            self.admin_form_error = "Only administrators can change user roles."
-            return
-
-        if username == self.current_user:
-            self.admin_form_error = "You cannot change your own role."
-            return rx.toast.warning(
-                "You cannot change your own role.",
-                duration=4000,
-                close_button=True,
-            )
-
-        db_path = _get_config().app.auth_db_path
-        try:
-            updated = set_user_admin_role_as_admin(
-                db_path,
-                self.current_user,
-                username,
-                is_admin=is_admin,
-            )
-            self.admin_form_error = ""
-            self.user_list = list_users_with_roles(db_path)
-            action = "Promoted" if updated.is_admin else "Demoted"
-            return rx.toast.success(
-                f"{action} '{updated.username}'.",
-                duration=4000,
-                close_button=True,
-            )
-        except ValueError as exc:
-            self.admin_form_error = str(exc)
-
-    @rx.event
-    def update_my_password(self):
-        self.current_password_error = ""
-        self.new_password_error = ""
-        self.new_password_confirm_error = ""
-        self.account_form_error = ""
-        self.account_form_message = ""
-
-        if not self.current_user:
-            self.account_form_error = "You are not signed in."
-            return
-
-        has_error = False
-        if not self.current_password:
-            self.current_password_error = "Current password is required."
-            has_error = True
-
-        password_error = validate_password_strength(self.new_password)
-        if password_error is not None:
-            self.new_password_error = password_error
-            has_error = True
-
-        if self.new_password != self.new_password_confirm:
-            self.new_password_confirm_error = "Passwords do not match."
-            has_error = True
-
-        if has_error:
-            return
-
-        db_path = _get_config().app.auth_db_path
-        try:
-            change_password(db_path, self.current_user, self.current_password, self.new_password)
-            self.current_password = ""
-            self.new_password = ""
-            self.new_password_confirm = ""
-            self.account_form_message = ""
-            return rx.toast.success(
-                "Password updated.",
-                duration=4000,
-                close_button=True,
-            )
-        except ValueError as exc:
-            message = str(exc)
-            if "current password" in message.lower():
-                self.current_password_error = message
-            else:
-                self.account_form_error = message
-
     @rx.event
     def set_page(self, page: str):
         self.current_page = page
         if page == "settings":
             self.account_form_error = ""
-            self.account_form_message = ""
             self.admin_form_error = ""
-            self.admin_form_message = ""
 
     @rx.event
     def set_history_start(self, value: str):
@@ -850,45 +446,6 @@ class AppState(rx.State):
             async with self:
                 self.history_error = str(exc)
                 self.history_loading = False
-
-    @rx.event
-    def on_load(self):
-        db_path = _get_config().app.auth_db_path
-        init_auth_db(db_path)
-
-        self.account_form_error = ""
-        self.account_form_message = ""
-        self.admin_form_error = ""
-        self.admin_form_message = ""
-
-        self.auth_users_exist = has_users(db_path)
-        self.auth_ready = True
-        self.auth_error = ""
-
-        if not self.auth_users_exist:
-            self.current_user = ""
-            self.current_user_is_admin = False
-            self.auth_token = ""
-            return
-
-        session_user = get_session_user(db_path, self.auth_token)
-        if session_user is None:
-            self.current_user = ""
-            self.current_user_is_admin = False
-            self.auth_token = ""
-            return
-
-        if not has_admin_users(db_path):
-            promote_user_to_admin(db_path, session_user.username)
-            promoted = get_user_by_username(db_path, session_user.username)
-            if promoted is not None:
-                session_user = promoted
-
-        self.current_user = session_user.username
-        self.current_user_is_admin = session_user.is_admin
-        self.refresh_user_list()
-
-        return [AppState.load_cached_strategy, AppState.refresh_today_data, AppState.load_cached_calibration]
 
     @rx.event
     def load_cached_strategy(self):

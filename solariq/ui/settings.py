@@ -154,7 +154,6 @@ def settings_tab() -> rx.Component:
             ),
             rx.vstack(
                 rx.input(
-                    value=AppState.current_password,
                     on_change=AppState.set_current_password,
                     type="password",
                     placeholder="Current password",
@@ -178,7 +177,6 @@ def settings_tab() -> rx.Component:
                     rx.fragment(),
                 ),
                 rx.input(
-                    value=AppState.new_password,
                     on_change=AppState.set_new_password,
                     type="password",
                     placeholder="New password",
@@ -202,7 +200,6 @@ def settings_tab() -> rx.Component:
                     rx.fragment(),
                 ),
                 rx.input(
-                    value=AppState.new_password_confirm,
                     on_change=AppState.set_new_password_confirm,
                     type="password",
                     placeholder="Confirm new password",
@@ -319,7 +316,6 @@ def settings_tab() -> rx.Component:
                         rx.fragment(),
                     ),
                     rx.input(
-                        value=AppState.new_user_password,
                         on_change=AppState.set_new_user_password,
                         type="password",
                         placeholder="Password",
@@ -343,7 +339,6 @@ def settings_tab() -> rx.Component:
                         rx.fragment(),
                     ),
                     rx.input(
-                        value=AppState.new_user_password_confirm,
                         on_change=AppState.set_new_user_password_confirm,
                         type="password",
                         placeholder="Confirm password",

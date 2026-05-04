@@ -1,11 +1,16 @@
 from pathlib import Path
 import sqlite3
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
+import solariq.auth as auth_module
+
 from solariq.auth import (
+    LOCKOUT_ERROR,
     authenticate_user,
     change_password,
+    create_initial_user,
     create_session,
     create_user,
     create_user_as_admin,
@@ -32,11 +37,25 @@ def test_init_and_first_user_bootstrap(tmp_path):
     init_auth_db(db_path)
 
     assert has_users(db_path) is False
-    first = create_user(db_path, "Admin", "strong-pass-1")
+    first = create_initial_user(db_path, "Admin", "strong-pass-1")
 
     assert first.username == "admin"
     assert first.is_admin is True
     assert has_users(db_path) is True
+
+
+def test_create_initial_user_fails_once_users_exist(tmp_path):
+    db_path = _db_path(tmp_path)
+    init_auth_db(db_path)
+
+    first = create_initial_user(db_path, "Admin", "strong-pass-1")
+    assert first.is_admin is True
+
+    with pytest.raises(ValueError, match="already exists. Please sign in"):
+        create_initial_user(db_path, "OtherAdmin", "strong-pass-2")
+
+    rows = list_users_with_roles(db_path)
+    assert rows == [{"username": "admin", "is_admin": True}]
 
 
 def test_authenticate_and_session_round_trip(tmp_path):
@@ -169,3 +188,50 @@ def test_password_requires_three_character_classes(tmp_path):
 
     created = create_user(db_path, "valid", "Abcdefg1")
     assert created.username == "valid"
+
+
+def test_authenticate_user_locks_after_repeated_failures(tmp_path):
+    db_path = _db_path(tmp_path)
+    init_auth_db(db_path)
+    create_user(db_path, "alice", "Strongpass1!")
+
+    for _ in range(5):
+        assert authenticate_user(db_path, "alice", "wrong-pass") is None
+
+    with pytest.raises(ValueError, match="Too many failed sign-in attempts"):
+        authenticate_user(db_path, "alice", "Strongpass1!")
+
+
+def test_successful_login_clears_failed_attempts(tmp_path):
+    db_path = _db_path(tmp_path)
+    init_auth_db(db_path)
+    create_user(db_path, "alice", "Strongpass1!")
+
+    for _ in range(4):
+        assert authenticate_user(db_path, "alice", "wrong-pass") is None
+
+    assert authenticate_user(db_path, "alice", "Strongpass1!") is not None
+
+    for _ in range(4):
+        assert authenticate_user(db_path, "alice", "wrong-pass") is None
+
+    assert authenticate_user(db_path, "alice", "Strongpass1!") is not None
+
+
+def test_lockout_expires_after_five_minutes(tmp_path, monkeypatch):
+    db_path = _db_path(tmp_path)
+    init_auth_db(db_path)
+    create_user(db_path, "alice", "Strongpass1!")
+
+    base_time = datetime(2026, 5, 4, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(auth_module, "_utcnow", lambda: base_time)
+
+    for _ in range(5):
+        assert authenticate_user(db_path, "alice", "wrong-pass") is None
+
+    with pytest.raises(ValueError, match=LOCKOUT_ERROR):
+        authenticate_user(db_path, "alice", "Strongpass1!")
+
+    monkeypatch.setattr(auth_module, "_utcnow", lambda: base_time + timedelta(minutes=5, seconds=1))
+
+    assert authenticate_user(db_path, "alice", "Strongpass1!") is not None
