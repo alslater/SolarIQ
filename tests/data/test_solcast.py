@@ -5,7 +5,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from solariq.config import load_config
-from solariq.data.solcast import fetch_solar_forecast
+from solariq.data.solcast import fetch_solar_forecast, fetch_solar_forecast_with_coverage
 
 
 @pytest.fixture
@@ -73,3 +73,20 @@ def test_fetch_solar_forecast_uses_bearer_auth(config):
         fetch_solar_forecast(config, target_date=date(2026, 5, 3))
     _, kwargs = mock_get.call_args
     assert kwargs["headers"]["Authorization"] == f"Bearer {config.solcast.api_key}"
+
+
+def test_fetch_solar_forecast_with_coverage_marks_missing_slots(config):
+    target_date = date(2026, 5, 3)
+    payload = _mock_solcast_response(target_date, 2.0)
+    payload["forecasts"] = payload["forecasts"][12:]
+
+    with patch("requests.get") as mock_get:
+        mock_get.return_value.json.return_value = payload
+        mock_get.return_value.raise_for_status = MagicMock()
+        forecast, covered_slots = fetch_solar_forecast_with_coverage(config, target_date=target_date)
+
+    assert len(forecast) == 48
+    assert 0 not in covered_slots
+    assert 11 not in covered_slots
+    assert 12 in covered_slots
+    assert forecast[12] == pytest.approx(1.0)

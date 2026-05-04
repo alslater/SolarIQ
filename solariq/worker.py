@@ -41,7 +41,7 @@ from solariq.data.octopus import (
     fetch_standing_charge_p_per_day,
     fill_unpublished_slots,
 )
-from solariq.data.solcast import fetch_solar_forecast
+from solariq.data.solcast import fetch_solar_forecast, fetch_solar_forecast_with_coverage
 from solariq.logging_config import setup_logging
 from solariq.optimizer.solver import solve
 from solariq.optimizer.strategy import build_rolling_window, current_window_start
@@ -252,14 +252,23 @@ def _maybe_refresh_strategy() -> None:
 
 
 def refresh_solar_forecast_today() -> None:
-    """Fetch today's Solcast forecast and cache it. Called twice daily to stay within API limits."""
+    """Fetch today's Solcast forecast only when it is absent from InfluxDB."""
     config = _get_config()
     today = date.today()
+    cached_slots = load_solar_forecast_today(config, today.isoformat())
+    if cached_slots is not None:
+        logger.info("today's Solcast forecast already present in InfluxDB for %s; skipping refresh", today)
+        return
+
     logger.info("refreshing Solcast forecast for %s", today)
     try:
-        slots = fetch_solar_forecast(config, today)
+        slots, covered_slots = fetch_solar_forecast_with_coverage(config, today)
         save_solar_forecast_today(config, slots, today.isoformat())
-        logger.info("solar forecast cached: total %.2f kWh", sum(slots))
+        logger.info(
+            "solar forecast saved to InfluxDB: total %.2f kWh (%d API slots)",
+            sum(slots),
+            len(covered_slots),
+        )
     except Exception as exc:
         logger.warning("solar forecast refresh failed: %s", exc)
 
