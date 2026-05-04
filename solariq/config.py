@@ -49,6 +49,8 @@ class AppConfig:
     timezone: str
     refresh_time: str  # "HH:MM"
     cache_dir: str = "cache"
+    auth_db_path: str = "data/auth.sqlite3"
+    auth_cookie_secure: bool = False
     log_file: str = ""  # empty = stdout
     log_level: str = "INFO"
     test_strategy_mode: bool = False  # substitute today's rates for tomorrow's when True
@@ -105,6 +107,8 @@ def load_config(path: str = "solariq.ini") -> SolarIQConfig:
             timezone=parser.get("app", "timezone", fallback="Europe/London"),
             refresh_time=parser.get("app", "refresh_time", fallback="16:15"),
             cache_dir=parser.get("app", "cache_dir", fallback="cache"),
+            auth_db_path=parser.get("app", "auth_db_path", fallback="data/auth.sqlite3"),
+            auth_cookie_secure=parser.getboolean("app", "auth_cookie_secure", fallback=False),
             log_file=parser.get("app", "log_file", fallback=""),
             log_level=parser.get("app", "log_level", fallback="INFO"),
             test_strategy_mode=parser.getboolean("app", "test_strategy_mode", fallback=False),

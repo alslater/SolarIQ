@@ -33,7 +33,7 @@ RUN uv run reflex init
 
 # ── Runtime directories ────────────────────────────────────────────────────────
 # These are overridden by volume mounts declared in docker-compose.yaml.
-RUN mkdir -p /app/cache /app/logs
+RUN mkdir -p /app/cache /app/logs /app/data
 
 # Reflex production: single port serves both frontend and backend websocket
 EXPOSE 3002

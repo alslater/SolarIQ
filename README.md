@@ -70,10 +70,12 @@ The application is split into two containers defined in `docker-compose.yaml`:
 ### Configuration
 
 ```bash
-mkdir -p config cache logs
+mkdir -p config cache data logs
 cp solariq.ini.example config/solariq.ini
 # Edit config/solariq.ini with real credentials
 ```
+
+On first web login, SolarIQ shows a bootstrap page if no users exist yet. Create the initial user there; this account is created as an administrator.
 
 Set `API_URL` in `docker-compose.yaml` to the IP or hostname of the machine running the containers so that browser clients can reach the backend websocket (e.g. `http://192.168.1.50:8002`). Also replace `YOUR_DOCKERHUB_USERNAME` with your Docker Hub username, or use a local image name.
 
@@ -121,7 +123,7 @@ docker buildx build \
 Then on the Pi:
 
 ```bash
-mkdir -p config cache logs
+mkdir -p config cache data logs
 cp solariq.ini.example config/solariq.ini
 # Edit config/solariq.ini
 # Edit docker-compose.yaml — set API_URL and YOUR_DOCKERHUB_USERNAME
@@ -134,6 +136,7 @@ docker compose up -d
 |-----------|---------------|---------|
 | `./config/solariq.ini` | `/app/solariq.ini` | Configuration (mounted read-only) |
 | `./cache/` | `/app/cache/` | Cached strategy, rates, and solar forecast JSON |
+| `./data/` | `/app/data/` | SQLite auth database (`auth.sqlite3`) |
 | `./logs/` | `/app/logs/` | Log output (enable `log_file` in `solariq.ini`) |
 
 ### Scaling the web tier

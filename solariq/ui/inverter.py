@@ -52,7 +52,7 @@ def inverter_tab() -> rx.Component:
                 rx.cond(
                     AppState.inverter_recorded_at != "",
                     rx.text(
-                        f"Last reading: {AppState.inverter_recorded_at}",
+                        f"Last reading: {AppState.inverter_recorded_at_local}",
                         style={"font_size": "12px", "color": t.MUTED},
                     ),
                     rx.fragment(),
