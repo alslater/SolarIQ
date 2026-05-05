@@ -51,7 +51,11 @@ def tomorrow_tab() -> rx.Component:
         # Summary bar
         rx.hstack(
             stat_card("Est. Cost", rx.text(f"£{AppState.estimated_cost_gbp}")),
-            stat_card("Solar Forecast", rx.text(f"{AppState.solar_forecast_kwh} kWh")),
+            stat_card(
+                "Solar Forecast",
+                rx.text(f"{AppState.solar_forecast_kwh} kWh"),
+                AppState.optimization_forecast_source_label,
+            ),
             stat_card("Grid Import", rx.text(f"{AppState.grid_import_kwh} kWh")),
             _last_updated_card(),
             spacing="3",

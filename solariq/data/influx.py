@@ -448,11 +448,23 @@ def get_latest_inverter_stats(config: SolarIQConfig) -> dict | None:
         return None
 
 
-def save_solar_forecast_influx(
-    config: SolarIQConfig, slots: list[float], for_date: date
-) -> None:
-    """Write 48-slot Solcast forecast to InfluxDB. Each slot is one point.
+def _forecast_database_for_source(config: SolarIQConfig, source: str) -> str:
+    if source == "solcast":
+        return config.influxdb.solcast_forecast_database
+    if source == "forecast_solar":
+        return config.influxdb.forecast_solar_forecast_database
+    raise ValueError(f"unsupported forecast source: {source}")
 
+
+def save_solar_forecast_influx(
+    config: SolarIQConfig,
+    slots: list[float],
+    for_date: date,
+    source: str = "solcast",
+) -> None:
+    """Write 48-slot forecast to InfluxDB. Each slot is one point.
+
+    source must be "solcast" or "forecast_solar".
     Raises on InfluxDB failure — caller should catch and log.
     """
     from datetime import timedelta
@@ -465,31 +477,33 @@ def save_solar_forecast_influx(
         points.append({
             "measurement": "solar_forecast",
             "time": t_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "tags": {"source": "solcast"},
+            "tags": {"source": source},
             "fields": {"pv_estimate_kwh": float(kwh)},
         })
     client = InfluxDBClient(
         host=config.influxdb.host,
         port=config.influxdb.port,
-        database=config.influxdb.solcast_forecast_database,
+        database=_forecast_database_for_source(config, source),
     )
-    client.create_database(config.influxdb.solcast_forecast_database)
+    client.create_database(_forecast_database_for_source(config, source))
     client.write_points(points)
     logger.info(
-        "saved %d Solcast forecast points for %s to InfluxDB", len(points), for_date
+        "saved %d %s forecast points for %s to InfluxDB", len(points), source, for_date
     )
 
 
 def load_solar_forecast_influx(
-    config: SolarIQConfig, for_date: date
+    config: SolarIQConfig,
+    for_date: date,
+    source: str = "solcast",
 ) -> list[float] | None:
-    """Read 48-slot Solcast forecast from InfluxDB. Returns None if data absent or partial."""
+    """Read 48-slot forecast from InfluxDB. Returns None if data absent or partial."""
     from_utc, to_utc = _local_day_utc_bounds(for_date, config.app.timezone)
     tz = ZoneInfo(config.app.timezone)
     client = InfluxDBClient(
         host=config.influxdb.host,
         port=config.influxdb.port,
-        database=config.influxdb.solcast_forecast_database,
+        database=_forecast_database_for_source(config, source),
     )
     try:
         result = client.query(
@@ -498,13 +512,23 @@ def load_solar_forecast_influx(
         )
         raw_points = list(result.get_points())
     except Exception as exc:
-        logger.warning("load_solar_forecast_influx query failed: %s", exc)
+        # First run for a source may hit an Influx "database not found" error
+        # before the worker has created the forecast database. Treat that as a
+        # normal cache miss rather than a warning.
+        if "database not found" in str(exc).lower():
+            logger.debug(
+                "load_solar_forecast_influx(%s): database missing for %s, returning None",
+                source,
+                for_date,
+            )
+            return None
+        logger.warning("load_solar_forecast_influx(%s) query failed: %s", source, exc)
         return None
 
     if len(raw_points) < 48:
         logger.debug(
-            "load_solar_forecast_influx: only %d points for %s, returning None",
-            len(raw_points), for_date,
+            "load_solar_forecast_influx(%s): only %d points for %s, returning None",
+            source, len(raw_points), for_date,
         )
         return None
 

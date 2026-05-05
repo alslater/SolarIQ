@@ -8,6 +8,8 @@ def test_influxdb_config(test_ini_path):
     assert config.influxdb.port == 8086
     assert config.influxdb.database == "energy"
     assert config.influxdb.solar_database == "solar"
+    assert config.influxdb.solcast_forecast_database == "solcast_test"
+    assert config.influxdb.forecast_solar_forecast_database == "forecast_solar_test"
 
 
 def test_octopus_config(test_ini_path):
@@ -20,6 +22,15 @@ def test_solcast_config(test_ini_path):
     config = load_config(test_ini_path)
     assert config.solcast.api_key == "test_solcast_key"
     assert config.solcast.resource_id == "test-resource-id"
+
+
+def test_forecast_solar_config(test_ini_path):
+    config = load_config(test_ini_path)
+    assert config.forecast_solar.base_url == "https://api.forecast.solar"
+    assert config.forecast_solar.api_key == "test_forecast_solar_key"
+    assert config.forecast_solar.declination == 35
+    assert config.forecast_solar.azimuth == 0
+    assert config.forecast_solar.peak_power_kw == 4.0
 
 
 def test_battery_config(test_ini_path):
