@@ -14,8 +14,6 @@ from solariq.app_settings import (
     set_collect_forecast_solar,
     set_collect_solcast,
     set_optimization_source,
-    set_today_show_forecast_solar,
-    set_today_show_solcast,
 )
 from solariq.cache import (
     get_cache_paths,
@@ -222,8 +220,14 @@ class AppState(AuthState):
     collect_solcast_enabled: bool = True
     collect_forecast_solar_enabled: bool = False
     optimization_forecast_source: str = OPTIMIZATION_SOURCE_SOLCAST
-    today_show_solcast_forecast: bool = True
-    today_show_forecast_solar_forecast: bool = False
+    _today_show_solcast_forecast: str = rx.LocalStorage(
+        "1",
+        name="solariq_today_show_solcast_forecast",
+    )
+    _today_show_forecast_solar_forecast: str = rx.LocalStorage(
+        "0",
+        name="solariq_today_show_forecast_solar_forecast",
+    )
 
     # Today data
     battery_soc_pct: float = 0.0
@@ -310,6 +314,14 @@ class AppState(AuthState):
             return "Source: forecast.solar"
         return "Source: Solcast"
 
+    @rx.var
+    def today_show_solcast_forecast(self) -> bool:
+        return str(self._today_show_solcast_forecast).lower() in {"1", "true", "yes", "on"}
+
+    @rx.var
+    def today_show_forecast_solar_forecast(self) -> bool:
+        return str(self._today_show_forecast_solar_forecast).lower() in {"1", "true", "yes", "on"}
+
     @rx.event
     def load_forecast_settings(self):
         """Load forecast settings from SQLite into state fields."""
@@ -325,8 +337,6 @@ class AppState(AuthState):
         self.collect_solcast_enabled = settings.collect_solcast
         self.collect_forecast_solar_enabled = settings.collect_forecast_solar
         self.optimization_forecast_source = settings.optimization_source
-        self.today_show_solcast_forecast = settings.today_show_solcast
-        self.today_show_forecast_solar_forecast = settings.today_show_forecast_solar
 
     def _sync_forecast_settings_from_db(self) -> None:
         """Refresh forecast settings from SQLite if another instance changed them."""
@@ -364,17 +374,11 @@ class AppState(AuthState):
 
     @rx.event
     def set_today_show_solcast_forecast(self, enabled: bool):
-        db_path = _get_config().app.auth_db_path
-        init_app_settings_db(db_path)
-        set_today_show_solcast(db_path, bool(enabled))
-        self.today_show_solcast_forecast = bool(enabled)
+        self._today_show_solcast_forecast = "1" if bool(enabled) else "0"
 
     @rx.event
     def set_today_show_forecast_solar_forecast(self, enabled: bool):
-        db_path = _get_config().app.auth_db_path
-        init_app_settings_db(db_path)
-        set_today_show_forecast_solar(db_path, bool(enabled))
-        self.today_show_forecast_solar_forecast = bool(enabled)
+        self._today_show_forecast_solar_forecast = "1" if bool(enabled) else "0"
 
     @rx.event
     def login(self):
