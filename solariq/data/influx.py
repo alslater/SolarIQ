@@ -335,30 +335,36 @@ def get_historical_range_data(
                 + battery_to_load_kwh * import_rate_map.get((d, slot), 0.0)
             )
 
-    # Fetch Solcast forecast from forecast database and aggregate to same buckets
-    predicted_solar_buckets: dict[tuple, float] = {}
-    solcast_client = InfluxDBClient(
-        host=config.influxdb.host,
-        port=config.influxdb.port,
-        database=config.influxdb.solcast_forecast_database,
-    )
-    try:
-        forecast_result = solcast_client.query(
-            f"SELECT pv_estimate_kwh "
-            f"FROM solar_forecast "
-            f"WHERE time >= '{from_utc}' AND time <= '{to_utc}' "
-            f"ORDER BY time ASC"
+    # Fetch forecast data from both providers and aggregate to the same buckets.
+    predicted_solcast_buckets: dict[tuple, float] = {}
+    predicted_forecast_solar_buckets: dict[tuple, float] = {}
+    forecast_sources = [
+        ("solcast", config.influxdb.solcast_forecast_database, predicted_solcast_buckets),
+        ("forecast_solar", config.influxdb.forecast_solar_forecast_database, predicted_forecast_solar_buckets),
+    ]
+    for source_name, database_name, bucket_map in forecast_sources:
+        source_client = InfluxDBClient(
+            host=config.influxdb.host,
+            port=config.influxdb.port,
+            database=database_name,
         )
-        for point in forecast_result.get_points():
-            t_utc = datetime.fromisoformat(point["time"].replace("Z", "+00:00"))
-            t_local = t_utc.astimezone(tz)
-            d = t_local.date()
-            if d < start_date or d > end_date:
-                continue
-            key = (d, t_local.hour) if use_hourly else (d,)
-            predicted_solar_buckets[key] = predicted_solar_buckets.get(key, 0.0) + float(point.get("pv_estimate_kwh") or 0.0)
-    except Exception as exc:
-        logger.warning("solcast forecast query failed for history: %s", exc)
+        try:
+            forecast_result = source_client.query(
+                f"SELECT pv_estimate_kwh "
+                f"FROM solar_forecast "
+                f"WHERE time >= '{from_utc}' AND time <= '{to_utc}' "
+                f"ORDER BY time ASC"
+            )
+            for point in forecast_result.get_points():
+                t_utc = datetime.fromisoformat(point["time"].replace("Z", "+00:00"))
+                t_local = t_utc.astimezone(tz)
+                d = t_local.date()
+                if d < start_date or d > end_date:
+                    continue
+                key = (d, t_local.hour) if use_hourly else (d,)
+                bucket_map[key] = bucket_map.get(key, 0.0) + float(point.get("pv_estimate_kwh") or 0.0)
+        except Exception as exc:
+            logger.warning("%s forecast query failed for history: %s", source_name, exc)
 
     # Build output rows covering every bucket in the range
     prec = 3 if use_hourly else 2
@@ -370,10 +376,19 @@ def get_historical_range_data(
                 key = (cursor, h)
                 label = f"{h:02d}:00" if delta_days == 1 else f"{cursor.strftime('%d %b')} {h:02d}:00"
                 bucket = energy_buckets.get(key, {"solar_kwh": 0.0, "grid_import_kwh": 0.0, "grid_export_kwh": 0.0})
+                predicted_solcast = predicted_solcast_buckets.get(key, 0.0)
+                predicted_forecast_solar = predicted_forecast_solar_buckets.get(key, 0.0)
+                predicted_default = (
+                    predicted_solcast
+                    if key in predicted_solcast_buckets
+                    else predicted_forecast_solar
+                )
                 rows.append({
                     "date": label,
                     "solar_kwh": round(bucket["solar_kwh"], prec),
-                    "predicted_solar_kwh": round(predicted_solar_buckets.get(key, 0.0), prec),
+                    "predicted_solar_kwh": round(predicted_default, prec),
+                    "predicted_solar_solcast_kwh": round(predicted_solcast, prec),
+                    "predicted_solar_forecast_solar_kwh": round(predicted_forecast_solar, prec),
                     "grid_import_kwh": round(bucket["grid_import_kwh"], prec),
                     "grid_export_kwh": round(bucket["grid_export_kwh"], prec),
                     "grid_cost_gbp": round(cost_buckets.get(key, 0.0) / 100, prec),
@@ -384,10 +399,19 @@ def get_historical_range_data(
         else:
             key = (cursor,)
             bucket = energy_buckets.get(key, {"solar_kwh": 0.0, "grid_import_kwh": 0.0, "grid_export_kwh": 0.0})
+            predicted_solcast = predicted_solcast_buckets.get(key, 0.0)
+            predicted_forecast_solar = predicted_forecast_solar_buckets.get(key, 0.0)
+            predicted_default = (
+                predicted_solcast
+                if key in predicted_solcast_buckets
+                else predicted_forecast_solar
+            )
             rows.append({
                 "date": cursor.strftime("%d %b"),
                 "solar_kwh": round(bucket["solar_kwh"], prec),
-                "predicted_solar_kwh": round(predicted_solar_buckets.get(key, 0.0), prec),
+                "predicted_solar_kwh": round(predicted_default, prec),
+                "predicted_solar_solcast_kwh": round(predicted_solcast, prec),
+                "predicted_solar_forecast_solar_kwh": round(predicted_forecast_solar, prec),
                 "grid_import_kwh": round(bucket["grid_import_kwh"], prec),
                 "grid_export_kwh": round(bucket["grid_export_kwh"], prec),
                 "grid_cost_gbp": round(cost_buckets.get(key, 0.0) / 100, prec),

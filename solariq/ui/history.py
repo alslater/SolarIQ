@@ -190,6 +190,24 @@ def history_tab() -> rx.Component:
                 # Solar actual vs predicted chart
                 rx.box(
                     _section_heading("Solar: Actual vs Predicted PV (kWh)"),
+                    rx.hstack(
+                        rx.text("Forecast Lines:", style={"font_size": "12px", "color": t.MUTED}),
+                        rx.checkbox(
+                            checked=AppState.today_show_solcast_forecast,
+                            on_change=AppState.set_today_show_solcast_forecast,
+                        ),
+                        rx.text("Solcast", style={"font_size": "12px", "color": t.FG}),
+                        rx.checkbox(
+                            checked=AppState.today_show_forecast_solar_forecast,
+                            on_change=AppState.set_today_show_forecast_solar_forecast,
+                        ),
+                        rx.text("forecast.solar", style={"font_size": "12px", "color": t.FG}),
+                        spacing="2",
+                        align="center",
+                        width="100%",
+                        margin_bottom="8px",
+                        wrap="wrap",
+                    ),
                     rx.recharts.composed_chart(
                         rx.recharts.cartesian_grid(stroke_dasharray="3 3", stroke=t.CHART_GRID),
                         rx.recharts.bar(
@@ -199,13 +217,29 @@ def history_tab() -> rx.Component:
                             fill_opacity=0.8,
                             radius=[2, 2, 0, 0],
                         ),
-                        rx.recharts.line(
-                            data_key="predicted_solar_kwh",
-                            name="Predicted PV",
-                            stroke="#f59e0b",
-                            stroke_width=2,
-                            dot=False,
-                            stroke_dasharray="4 2",
+                        rx.cond(
+                            AppState.today_show_solcast_forecast,
+                            rx.recharts.line(
+                                data_key="predicted_solar_solcast_kwh",
+                                name="Solcast Forecast",
+                                stroke="#f59e0b",
+                                stroke_width=2,
+                                dot=False,
+                                stroke_dasharray="4 2",
+                            ),
+                            rx.fragment(),
+                        ),
+                        rx.cond(
+                            AppState.today_show_forecast_solar_forecast,
+                            rx.recharts.line(
+                                data_key="predicted_solar_forecast_solar_kwh",
+                                name="forecast.solar Forecast",
+                                stroke="#22c55e",
+                                stroke_width=2,
+                                dot=False,
+                                stroke_dasharray="6 3",
+                            ),
+                            rx.fragment(),
                         ),
                         rx.recharts.x_axis(
                             data_key="date",
