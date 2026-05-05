@@ -312,14 +312,26 @@ class AppState(AuthState):
 
     @rx.event
     def load_forecast_settings(self):
+        """Load forecast settings from SQLite into state fields."""
+        settings = self._read_forecast_settings_from_db()
+        self._apply_forecast_settings(settings)
+
+    def _read_forecast_settings_from_db(self):
         db_path = _get_config().app.auth_db_path
         init_app_settings_db(db_path)
-        settings = get_forecast_settings(db_path)
+        return get_forecast_settings(db_path)
+
+    def _apply_forecast_settings(self, settings) -> None:
         self.collect_solcast_enabled = settings.collect_solcast
         self.collect_forecast_solar_enabled = settings.collect_forecast_solar
         self.optimization_forecast_source = settings.optimization_source
         self.today_show_solcast_forecast = settings.today_show_solcast
         self.today_show_forecast_solar_forecast = settings.today_show_forecast_solar
+
+    def _sync_forecast_settings_from_db(self) -> None:
+        """Refresh forecast settings from SQLite if another instance changed them."""
+        settings = self._read_forecast_settings_from_db()
+        self._apply_forecast_settings(settings)
 
     @rx.event
     def set_collect_solcast_enabled(self, enabled: bool):
@@ -586,6 +598,7 @@ class AppState(AuthState):
         if page == "settings":
             self.account_form_error = ""
             self.admin_form_error = ""
+            return AppState.load_forecast_settings
         if page == "today":
             return AppState.refresh_today_data
 
@@ -1148,6 +1161,11 @@ class AppState(AuthState):
                     if not self.current_user:
                         self.today_loading = False
                         return
+
+                # Keep per-instance settings state aligned with shared SQLite state.
+                latest_settings = await asyncio.to_thread(self._read_forecast_settings_from_db)
+                async with self:
+                    self._apply_forecast_settings(latest_settings)
 
                 poll_interval = 30
                 try:
