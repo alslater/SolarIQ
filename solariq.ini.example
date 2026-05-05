@@ -4,6 +4,8 @@ port = 8086
 database = energy
 solar_database = solar
 solax_database = solax
+solcast_forecast_database = solcast
+forecast_solar_forecast_database = forecast_solar
 
 [octopus]
 api_key = YOUR_OCTOPUS_API_KEY
@@ -19,6 +21,15 @@ export_serial_number = 23L3537933
 [solcast]
 api_key = YOUR_SOLCAST_API_KEY
 resource_id = YOUR_RESOURCE_ID
+
+[forecast_solar]
+base_url = https://api.forecast.solar
+# Optional; forecast.solar also works without an API key (lower rate limits).
+api_key =
+# Array geometry for forecast.solar endpoint
+declination = 35
+azimuth = 0
+peak_power_kw = 4.0
 
 [battery]
 capacity_kwh = 23.2

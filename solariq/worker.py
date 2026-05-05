@@ -21,6 +21,11 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
+from solariq.app_settings import (
+    OPTIMIZATION_SOURCE_FORECAST_SOLAR,
+    ForecastSettings,
+    get_forecast_settings,
+)
 from solariq.cache import (
     load_calibration,
     load_solar_forecast_today,
@@ -32,6 +37,7 @@ from solariq.cache import (
 )
 from solariq.calibration import compute_export_factor
 from solariq.config import SolarIQConfig, load_config
+from solariq.data.forecast_solar import fetch_forecast_solar, fetch_forecast_solar_with_coverage
 from solariq.data.influx import get_today_live_data, load_solar_forecast_influx, save_solar_forecast_influx
 from solariq.data.load_profile import build_load_profile
 from solariq.data.octopus import (
@@ -73,6 +79,55 @@ def _get_standing_charge() -> float:
             logger.warning("standing charge fetch failed, using config fallback: %s", exc)
             _standing_charge_p = config.octopus.standing_charge_p_per_day
     return _standing_charge_p
+
+
+def _get_forecast_settings() -> ForecastSettings:
+    config = _get_config()
+    return get_forecast_settings(config.app.auth_db_path)
+
+
+def _selected_forecast(
+    settings: ForecastSettings,
+    solcast_slots: list[float] | None,
+    forecast_solar_slots: list[float] | None,
+) -> tuple[list[float], bool]:
+    """Return selected forecast slots and whether data was estimated/missing."""
+    if settings.optimization_source == OPTIMIZATION_SOURCE_FORECAST_SOLAR:
+        if forecast_solar_slots is not None:
+            return forecast_solar_slots, False
+        if solcast_slots is not None:
+            return solcast_slots, False
+        return [0.0] * 48, True
+
+    if solcast_slots is not None:
+        return solcast_slots, False
+    if forecast_solar_slots is not None:
+        return forecast_solar_slots, False
+    return [0.0] * 48, True
+
+
+def _load_or_refresh_today_forecast(
+    config: SolarIQConfig,
+    today_str: str,
+    *,
+    enabled: bool,
+    source: str,
+    refresh_fn,
+    label: str,
+) -> list[float] | None:
+    if not enabled:
+        return None
+
+    slots = load_solar_forecast_today(config, today_str, source=source)
+    if slots is not None:
+        return slots
+
+    try:
+        refresh_fn()
+        return load_solar_forecast_today(config, today_str, source=source)
+    except Exception as exc:
+        logger.warning("inline %s refresh failed: %s", label, exc)
+        return None
 
 
 def _tomorrow(config: SolarIQConfig) -> date:
@@ -120,15 +175,29 @@ def refresh_today() -> None:
 
         timestamps = today_data.timestamps
         today_str = date.today().isoformat()
-        solar_forecast = load_solar_forecast_today(config, today_str)
-        if solar_forecast is None:
-            # Cache miss (new day or first run) — refresh inline rather than showing zeros
-            try:
-                refresh_solar_forecast_today()
-                solar_forecast = load_solar_forecast_today(config, today_str)
-            except Exception as exc:
-                logger.warning("inline solar forecast refresh failed: %s", exc)
-        solar_forecast = solar_forecast or [0.0] * 48
+        settings = _get_forecast_settings()
+
+        solcast_forecast = _load_or_refresh_today_forecast(
+            config,
+            today_str,
+            enabled=settings.collect_solcast,
+            source="solcast",
+            refresh_fn=refresh_solar_forecast_today,
+            label="Solcast",
+        )
+
+        forecast_solar_forecast = _load_or_refresh_today_forecast(
+            config,
+            today_str,
+            enabled=settings.collect_forecast_solar,
+            source="forecast_solar",
+            refresh_fn=refresh_forecast_solar_today,
+            label="forecast.solar",
+        )
+
+        selected_forecast, _ = _selected_forecast(settings, solcast_forecast, forecast_solar_forecast)
+        solcast_for_chart = solcast_forecast or [0.0] * 48
+        forecast_solar_for_chart = forecast_solar_forecast or [0.0] * 48
 
         chart_data = []
         for i in range(48):
@@ -137,7 +206,9 @@ def refresh_today() -> None:
                 "grid_import": round(today_data.actual_grid_import[i] or 0.0, 3),
                 "grid_export": round(today_data.actual_grid_export[i] or 0.0, 3),
                 "solar": round(today_data.actual_solar[i] or 0.0, 3),
-                "predicted_solar": round(solar_forecast[i], 3),
+                "predicted_solar": round(selected_forecast[i], 3),
+                "predicted_solar_solcast": round(solcast_for_chart[i], 3),
+                "predicted_solar_forecast_solar": round(forecast_solar_for_chart[i], 3),
                 "soc_pct": (
                     (today_data.actual_battery_soc_kwh[i] or 0.0) / config.battery.capacity_kwh * 100
                     if today_data.actual_battery_soc_kwh[i] is not None else None
@@ -206,6 +277,7 @@ def _maybe_refresh_strategy() -> None:
 
     logger.info("refreshing rolling window strategy%s", " [TEST MODE]" if config.app.test_strategy_mode else "")
     try:
+        settings = _get_forecast_settings()
         today = datetime.now(tz).date()
         current_slot, window_start = current_window_start(config.app.timezone)
 
@@ -213,20 +285,45 @@ def _maybe_refresh_strategy() -> None:
         export_today = fetch_export_prices(config, today)
         export_tomorrow = fetch_export_prices(config, tomorrow) if not config.app.test_strategy_mode else export_today
 
-        solar_today = load_solar_forecast_influx(config, today) or [0.0] * 48
-        solar_tomorrow = load_solar_forecast_influx(config, tomorrow)
-        solar_estimated = False
-        if solar_tomorrow is None:
+        solcast_today = load_solar_forecast_influx(config, today, source="solcast") if settings.collect_solcast else None
+        solcast_tomorrow = load_solar_forecast_influx(config, tomorrow, source="solcast") if settings.collect_solcast else None
+        if settings.collect_solcast and solcast_tomorrow is None:
             try:
-                solar_tomorrow = fetch_solar_forecast(config, tomorrow)
+                solcast_tomorrow = fetch_solar_forecast(config, tomorrow)
                 try:
-                    save_solar_forecast_influx(config, solar_tomorrow, tomorrow)
+                    save_solar_forecast_influx(config, solcast_tomorrow, tomorrow, source="solcast")
                 except Exception as exc:
-                    logger.warning("failed to cache tomorrow's forecast: %s", exc)
+                    logger.warning("failed to cache tomorrow's Solcast forecast: %s", exc)
             except Exception as exc:
-                logger.warning("Solcast unavailable, using zero solar forecast: %s", exc)
-                solar_tomorrow = [0.0] * 48
-                solar_estimated = True
+                logger.warning("Solcast unavailable for strategy: %s", exc)
+
+        forecast_solar_today = (
+            load_solar_forecast_influx(config, today, source="forecast_solar")
+            if settings.collect_forecast_solar
+            else None
+        )
+        forecast_solar_tomorrow = (
+            load_solar_forecast_influx(config, tomorrow, source="forecast_solar")
+            if settings.collect_forecast_solar
+            else None
+        )
+        if settings.collect_forecast_solar and forecast_solar_tomorrow is None:
+            try:
+                forecast_solar_tomorrow = fetch_forecast_solar(config, tomorrow)
+                try:
+                    save_solar_forecast_influx(
+                        config,
+                        forecast_solar_tomorrow,
+                        tomorrow,
+                        source="forecast_solar",
+                    )
+                except Exception as exc:
+                    logger.warning("failed to cache tomorrow's forecast.solar forecast: %s", exc)
+            except Exception as exc:
+                logger.warning("forecast.solar unavailable for strategy: %s", exc)
+
+        solar_today_selected, _ = _selected_forecast(settings, solcast_today, forecast_solar_today)
+        solar_tomorrow_selected, solar_estimated = _selected_forecast(settings, solcast_tomorrow, forecast_solar_tomorrow)
 
         load_today = build_load_profile(config, today)
         load_tomorrow = build_load_profile(config, tomorrow)
@@ -237,7 +334,7 @@ def _maybe_refresh_strategy() -> None:
         export_tomorrow_eff = fill_unpublished_slots(export_tomorrow) if config.app.test_strategy_mode else export_tomorrow
         agile = build_rolling_window(agile_for_today, agile_for_tomorrow, current_slot)
         export = build_rolling_window(export_today_eff, export_tomorrow_eff, current_slot)
-        solar = build_rolling_window(solar_today, solar_tomorrow, current_slot)
+        solar = build_rolling_window(solar_today_selected, solar_tomorrow_selected, current_slot)
         load = build_rolling_window(load_today, load_tomorrow, current_slot)
 
         today_data = get_today_live_data(config)
@@ -252,10 +349,14 @@ def _maybe_refresh_strategy() -> None:
 
 
 def refresh_solar_forecast_today() -> None:
-    """Fetch today's Solcast forecast only when it is absent from InfluxDB."""
+    """Fetch today's Solcast forecast only when enabled and absent from InfluxDB."""
     config = _get_config()
+    settings = _get_forecast_settings()
+    if not settings.collect_solcast:
+        logger.info("Solcast collection disabled in settings; skipping")
+        return
     today = date.today()
-    cached_slots = load_solar_forecast_today(config, today.isoformat())
+    cached_slots = load_solar_forecast_today(config, today.isoformat(), source="solcast")
     if cached_slots is not None:
         logger.info("today's Solcast forecast already present in InfluxDB for %s; skipping refresh", today)
         return
@@ -263,7 +364,7 @@ def refresh_solar_forecast_today() -> None:
     logger.info("refreshing Solcast forecast for %s", today)
     try:
         slots, covered_slots = fetch_solar_forecast_with_coverage(config, today)
-        save_solar_forecast_today(config, slots, today.isoformat())
+        save_solar_forecast_today(config, slots, today.isoformat(), source="solcast")
         logger.info(
             "solar forecast saved to InfluxDB: total %.2f kWh (%d API slots)",
             sum(slots),
@@ -271,6 +372,33 @@ def refresh_solar_forecast_today() -> None:
         )
     except Exception as exc:
         logger.warning("solar forecast refresh failed: %s", exc)
+
+
+def refresh_forecast_solar_today() -> None:
+    """Fetch today's forecast.solar forecast only when enabled and absent from InfluxDB."""
+    config = _get_config()
+    settings = _get_forecast_settings()
+    if not settings.collect_forecast_solar:
+        logger.info("forecast.solar collection disabled in settings; skipping")
+        return
+
+    today = date.today()
+    cached_slots = load_solar_forecast_today(config, today.isoformat(), source="forecast_solar")
+    if cached_slots is not None:
+        logger.info("today's forecast.solar already present in InfluxDB for %s; skipping refresh", today)
+        return
+
+    logger.info("refreshing forecast.solar for %s", today)
+    try:
+        slots, covered_slots = fetch_forecast_solar_with_coverage(config, today)
+        save_solar_forecast_today(config, slots, today.isoformat(), source="forecast_solar")
+        logger.info(
+            "forecast.solar saved to InfluxDB: total %.2f kWh (%d API slots)",
+            sum(slots),
+            len(covered_slots),
+        )
+    except Exception as exc:
+        logger.warning("forecast.solar refresh failed: %s", exc)
 
 
 def refresh_calibration() -> None:
@@ -300,8 +428,9 @@ def main() -> None:
         logger.info("no cached calibration — computing on startup")
         refresh_calibration()
 
-    # Fetch today's solar forecast on startup
+    # Fetch today's solar forecast sources on startup
     refresh_solar_forecast_today()
+    refresh_forecast_solar_today()
 
     scheduler = BlockingScheduler(timezone="UTC")
     scheduler.add_job(
@@ -315,6 +444,12 @@ def main() -> None:
         refresh_solar_forecast_today,
         CronTrigger(hour="0,5,12", minute=5, timezone="UTC"),  # ~1am, 6am, 1pm BST — 3 calls/day
         id="refresh_solar_forecast_today",
+        misfire_grace_time=3600,
+    )
+    scheduler.add_job(
+        refresh_forecast_solar_today,
+        CronTrigger(hour="0,5,12", minute=7, timezone="UTC"),
+        id="refresh_forecast_solar_today",
         misfire_grace_time=3600,
     )
     scheduler.add_job(

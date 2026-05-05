@@ -87,21 +87,26 @@ def load_today_snapshot(path: str | None = None) -> dict | None:
 
 
 def save_solar_forecast_today(
-    config: "SolarIQConfig", slots: list[float], for_date: str
+    config: "SolarIQConfig",
+    slots: list[float],
+    for_date: str,
+    source: str = "solcast",
 ) -> None:
-    """Write today's Solcast forecast to InfluxDB."""
+    """Write today's solar forecast to InfluxDB for the specified source."""
     from datetime import date as _date
     from solariq.data.influx import save_solar_forecast_influx
-    save_solar_forecast_influx(config, slots, _date.fromisoformat(for_date))
+    save_solar_forecast_influx(config, slots, _date.fromisoformat(for_date), source=source)
 
 
 def load_solar_forecast_today(
-    config: "SolarIQConfig", for_date: str
+    config: "SolarIQConfig",
+    for_date: str,
+    source: str = "solcast",
 ) -> list[float] | None:
-    """Load today's Solcast forecast from InfluxDB. Returns None if absent."""
+    """Load today's solar forecast from InfluxDB. Returns None if absent."""
     from datetime import date as _date
     from solariq.data.influx import load_solar_forecast_influx
-    return load_solar_forecast_influx(config, _date.fromisoformat(for_date))
+    return load_solar_forecast_influx(config, _date.fromisoformat(for_date), source=source)
 
 
 DEFAULT_TODAY_RATES_PATH = str(Path(DEFAULT_CACHE_DIR) / TODAY_RATES_FILENAME)

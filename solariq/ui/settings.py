@@ -133,6 +133,71 @@ def settings_tab() -> rx.Component:
             ),
             rx.fragment(),
         ),
+        # Forecast sources section (admin only)
+        rx.cond(
+            AppState.current_user_is_admin,
+            rx.box(
+                rx.text(
+                    "Forecast Sources",
+                    style={
+                        "font_size": "13px",
+                        "font_weight": "600",
+                        "color": t.MUTED,
+                        "text_transform": "uppercase",
+                        "letter_spacing": "0.06em",
+                        "margin_bottom": "16px",
+                    },
+                ),
+                rx.text(
+                    "Choose which providers are collected by the worker and which source is used for optimization.",
+                    style={"font_size": "13px", "color": t.MUTED, "margin_bottom": "14px"},
+                ),
+                rx.vstack(
+                    rx.hstack(
+                        rx.checkbox(
+                            checked=AppState.collect_solcast_enabled,
+                            on_change=AppState.set_collect_solcast_enabled,
+                        ),
+                        rx.text("Collect Solcast", style={"font_size": "13px", "color": t.FG}),
+                        spacing="2",
+                        align="center",
+                    ),
+                    rx.hstack(
+                        rx.checkbox(
+                            checked=AppState.collect_forecast_solar_enabled,
+                            on_change=AppState.set_collect_forecast_solar_enabled,
+                        ),
+                        rx.text("Collect forecast.solar", style={"font_size": "13px", "color": t.FG}),
+                        spacing="2",
+                        align="center",
+                    ),
+                    spacing="2",
+                    margin_bottom="14px",
+                    align="start",
+                ),
+                rx.text(
+                    "Optimization source",
+                    style={"font_size": "12px", "font_weight": "600", "color": t.MUTED, "margin_bottom": "8px"},
+                ),
+                rx.hstack(
+                    rx.button(
+                        "Solcast",
+                        on_click=AppState.set_optimization_forecast_source("solcast"),
+                        variant=rx.cond(AppState.optimize_with_solcast, "solid", "soft"),
+                        size="2",
+                    ),
+                    rx.button(
+                        "forecast.solar",
+                        on_click=AppState.set_optimization_forecast_source("forecast_solar"),
+                        variant=rx.cond(AppState.optimize_with_forecast_solar, "solid", "soft"),
+                        size="2",
+                    ),
+                    spacing="2",
+                ),
+                style={**t.CARD_STYLE, "padding": "24px", "width": "100%"},
+            ),
+            rx.fragment(),
+        ),
         # Account section
         rx.box(
             rx.text(

@@ -1,9 +1,22 @@
 import asyncio
+import logging
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import reflex as rx
 
+from solariq.app_settings import (
+    OPTIMIZATION_SOURCE_FORECAST_SOLAR,
+    OPTIMIZATION_SOURCE_SOLCAST,
+    get_forecast_settings,
+    init_app_settings_db,
+    set_collect_forecast_solar,
+    set_collect_solcast,
+    set_optimization_source,
+    set_today_show_forecast_solar,
+    set_today_show_solcast,
+)
 from solariq.cache import (
     get_cache_paths,
     load_calibration,
@@ -16,8 +29,9 @@ from solariq.cache import (
 )
 from solariq.config import SolarIQConfig
 from solariq.data.influx import get_today_live_data, get_historical_range_data, get_latest_inverter_stats
+from solariq.data.forecast_solar import fetch_forecast_solar
 from solariq.data.load_profile import build_load_profile
-from solariq.data.octopus import fetch_agile_prices, fetch_export_prices, fetch_standing_charge_p_per_day, fetch_total_standing_charge_gbp, fill_unpublished_slots
+from solariq.data.octopus import UNPUBLISHED_RATE_CAP_P, fetch_agile_prices, fetch_export_prices, fetch_standing_charge_p_per_day, fetch_total_standing_charge_gbp, fill_unpublished_slots
 from solariq.data.solcast import fetch_solar_forecast
 from solariq.data.weather import fetch_today_weather
 from solariq.optimizer.solver import solve
@@ -33,6 +47,151 @@ def _prices_published(agile_tomorrow: list[float]) -> bool:
     """Return True if tomorrow's Agile prices are published (not all at cap)."""
     from solariq.data.octopus import UNPUBLISHED_RATE_CAP_P
     return not all(p >= UNPUBLISHED_RATE_CAP_P for p in agile_tomorrow)
+
+
+def _select_forecast_slots(
+    preferred_source: str,
+    solcast_slots: list[float] | None,
+    forecast_solar_slots: list[float] | None,
+) -> tuple[list[float], bool]:
+    """Return selected forecast slots and whether data was estimated/missing."""
+    if preferred_source == OPTIMIZATION_SOURCE_FORECAST_SOLAR:
+        if forecast_solar_slots is not None:
+            return forecast_solar_slots, False
+        if solcast_slots is not None:
+            return solcast_slots, False
+        return [0.0] * 48, True
+
+    if solcast_slots is not None:
+        return solcast_slots, False
+    if forecast_solar_slots is not None:
+        return forecast_solar_slots, False
+    return [0.0] * 48, True
+
+
+@dataclass
+class _TodayDirectResult:
+    battery_soc_pct: float
+    battery_soc_kwh: float
+    solar_today_kwh: float
+    grid_import_today_kwh: float
+    grid_export_today_kwh: float
+    grid_cost_gbp: float
+    grid_export_revenue_gbp: float
+    net_daily_cost_gbp: float
+    standing_charge_p_per_day: float
+    current_rate_p: float
+    current_export_rate_p: float
+    chart_data: list
+    price_data: list
+
+
+async def _fetch_today_direct(
+    config: SolarIQConfig,
+    today_local: date,
+    log_context: str = "",
+) -> _TodayDirectResult:
+    """Fetch and compute all today-view data directly (bypassing worker snapshot).
+
+    Used by both the polling fallback path and the manual refresh path.
+    """
+    try:
+        sc = await asyncio.to_thread(fetch_standing_charge_p_per_day, config)
+    except Exception:
+        sc = config.octopus.standing_charge_p_per_day
+
+    today_data = await asyncio.to_thread(get_today_live_data, config)
+    load_profile = await asyncio.to_thread(build_load_profile, config, today_local)
+    settings = get_forecast_settings(config.app.auth_db_path)
+
+    solcast_forecast = None
+    if settings.collect_solcast:
+        solcast_forecast = load_solar_forecast_today(config, today_local.isoformat(), source="solcast")
+    if settings.collect_solcast and solcast_forecast is None:
+        try:
+            slots = await asyncio.to_thread(fetch_solar_forecast, config, today_local)
+            await asyncio.to_thread(
+                save_solar_forecast_today,
+                config,
+                slots,
+                today_local.isoformat(),
+                "solcast",
+            )
+            solcast_forecast = slots
+        except Exception as exc:
+            logging.getLogger(__name__).warning("Solcast fetch failed%s: %s", log_context, exc)
+
+    forecast_solar_forecast = None
+    if settings.collect_forecast_solar:
+        forecast_solar_forecast = load_solar_forecast_today(
+            config,
+            today_local.isoformat(),
+            source="forecast_solar",
+        )
+    if settings.collect_forecast_solar and forecast_solar_forecast is None:
+        try:
+            slots = await asyncio.to_thread(fetch_forecast_solar, config, today_local)
+            await asyncio.to_thread(
+                save_solar_forecast_today,
+                config,
+                slots,
+                today_local.isoformat(),
+                "forecast_solar",
+            )
+            forecast_solar_forecast = slots
+        except Exception as exc:
+            logging.getLogger(__name__).warning("forecast.solar fetch failed%s: %s", log_context, exc)
+
+    selected_forecast, _ = _select_forecast_slots(
+        settings.optimization_source,
+        solcast_forecast,
+        forecast_solar_forecast,
+    )
+
+    solcast_for_chart = solcast_forecast or [0.0] * 48
+    forecast_solar_for_chart = forecast_solar_forecast or [0.0] * 48
+    timestamps = today_data.timestamps
+    chart_rows = []
+    for i in range(48):
+        chart_rows.append({
+            "time": timestamps[i],
+            "grid_import": round(today_data.actual_grid_import[i] or 0.0, 3),
+            "grid_export": round(today_data.actual_grid_export[i] or 0.0, 3),
+            "solar": round(today_data.actual_solar[i] or 0.0, 3),
+            "predicted_solar": round(selected_forecast[i], 3),
+            "predicted_solar_solcast": round(solcast_for_chart[i], 3),
+            "predicted_solar_forecast_solar": round(forecast_solar_for_chart[i], 3),
+            "soc_pct": (
+                (today_data.actual_battery_soc_kwh[i] or 0.0) / config.battery.capacity_kwh * 100
+                if today_data.actual_battery_soc_kwh[i] is not None else None
+            ),
+            "predicted_usage": load_profile[i],
+            "is_actual": i <= today_data.last_data_slot,
+        })
+    price_rows = [
+        {
+            "time": timestamps[i],
+            "import": 0.0 if today_data.agile_prices[i] >= UNPUBLISHED_RATE_CAP_P else today_data.agile_prices[i],
+            "export": 0.0 if today_data.export_prices[i] >= UNPUBLISHED_RATE_CAP_P else today_data.export_prices[i],
+        }
+        for i in range(48)
+    ]
+
+    return _TodayDirectResult(
+        battery_soc_pct=round(today_data.battery_soc_pct, 1),
+        battery_soc_kwh=round(today_data.battery_soc_kwh, 1),
+        solar_today_kwh=round(today_data.solar_today_kwh, 2),
+        grid_import_today_kwh=round(sum(v for v in today_data.actual_grid_import if v is not None), 2),
+        grid_export_today_kwh=round(sum(v for v in today_data.actual_grid_export if v is not None), 2),
+        grid_cost_gbp=round(today_data.grid_cost_pence / 100, 2),
+        grid_export_revenue_gbp=round(today_data.grid_export_revenue_pence / 100, 2),
+        net_daily_cost_gbp=round((today_data.grid_cost_pence - today_data.grid_export_revenue_pence + sc) / 100, 2),
+        standing_charge_p_per_day=sc,
+        current_rate_p=round(today_data.current_rate_p, 1),
+        current_export_rate_p=round(today_data.current_export_rate_p, 1),
+        chart_data=chart_rows,
+        price_data=price_rows,
+    )
 
 
 class AppState(AuthState):
@@ -59,6 +218,13 @@ class AppState(AuthState):
     tomorrow_price_data: list[dict] = []
     tomorrow_solar_data: list[dict] = []
 
+    # Forecast source settings
+    collect_solcast_enabled: bool = True
+    collect_forecast_solar_enabled: bool = False
+    optimization_forecast_source: str = OPTIMIZATION_SOURCE_SOLCAST
+    today_show_solcast_forecast: bool = True
+    today_show_forecast_solar_forecast: bool = False
+
     # Today data
     battery_soc_pct: float = 0.0
     battery_soc_kwh: float = 0.0
@@ -73,6 +239,7 @@ class AppState(AuthState):
     current_export_rate_p: float = 0.0
     today_loading: bool = False
     today_poll_running: bool = False
+    today_poll_generation: int = 0
     today_error: str = ""
     today_weather_code: int = -1
     today_weather_max_temp_c: float = 0.0
@@ -123,10 +290,79 @@ class AppState(AuthState):
 
     def _post_auth_success_events(self) -> list:
         return [
+            AppState.load_forecast_settings,
             AppState.load_cached_strategy,
             AppState.refresh_today_data,
             AppState.load_cached_calibration,
         ]
+
+    @rx.var
+    def optimize_with_solcast(self) -> bool:
+        return self.optimization_forecast_source == OPTIMIZATION_SOURCE_SOLCAST
+
+    @rx.var
+    def optimize_with_forecast_solar(self) -> bool:
+        return self.optimization_forecast_source == OPTIMIZATION_SOURCE_FORECAST_SOLAR
+
+    @rx.var
+    def optimization_forecast_source_label(self) -> str:
+        if self.optimization_forecast_source == OPTIMIZATION_SOURCE_FORECAST_SOLAR:
+            return "Source: forecast.solar"
+        return "Source: Solcast"
+
+    @rx.event
+    def load_forecast_settings(self):
+        db_path = _get_config().app.auth_db_path
+        init_app_settings_db(db_path)
+        settings = get_forecast_settings(db_path)
+        self.collect_solcast_enabled = settings.collect_solcast
+        self.collect_forecast_solar_enabled = settings.collect_forecast_solar
+        self.optimization_forecast_source = settings.optimization_source
+        self.today_show_solcast_forecast = settings.today_show_solcast
+        self.today_show_forecast_solar_forecast = settings.today_show_forecast_solar
+
+    @rx.event
+    def set_collect_solcast_enabled(self, enabled: bool):
+        if not self.current_user_is_admin:
+            return rx.toast.warning("Only administrators can change forecast collection settings.")
+        db_path = _get_config().app.auth_db_path
+        init_app_settings_db(db_path)
+        set_collect_solcast(db_path, bool(enabled))
+        self.collect_solcast_enabled = bool(enabled)
+
+    @rx.event
+    def set_collect_forecast_solar_enabled(self, enabled: bool):
+        if not self.current_user_is_admin:
+            return rx.toast.warning("Only administrators can change forecast collection settings.")
+        db_path = _get_config().app.auth_db_path
+        init_app_settings_db(db_path)
+        set_collect_forecast_solar(db_path, bool(enabled))
+        self.collect_forecast_solar_enabled = bool(enabled)
+
+    @rx.event
+    def set_optimization_forecast_source(self, source: str):
+        if not self.current_user_is_admin:
+            return rx.toast.warning("Only administrators can change optimization forecast source.")
+        if source not in {OPTIMIZATION_SOURCE_SOLCAST, OPTIMIZATION_SOURCE_FORECAST_SOLAR}:
+            return
+        db_path = _get_config().app.auth_db_path
+        init_app_settings_db(db_path)
+        set_optimization_source(db_path, source)
+        self.optimization_forecast_source = source
+
+    @rx.event
+    def set_today_show_solcast_forecast(self, enabled: bool):
+        db_path = _get_config().app.auth_db_path
+        init_app_settings_db(db_path)
+        set_today_show_solcast(db_path, bool(enabled))
+        self.today_show_solcast_forecast = bool(enabled)
+
+    @rx.event
+    def set_today_show_forecast_solar_forecast(self, enabled: bool):
+        db_path = _get_config().app.auth_db_path
+        init_app_settings_db(db_path)
+        set_today_show_forecast_solar(db_path, bool(enabled))
+        self.today_show_forecast_solar_forecast = bool(enabled)
 
     @rx.event
     def login(self):
@@ -793,25 +1029,58 @@ class AppState(AuthState):
             from solariq.optimizer.strategy import build_rolling_window, current_window_start
 
             current_slot, window_start = current_window_start(config.app.timezone)
+            settings = get_forecast_settings(config.app.auth_db_path)
 
             agile_today = await asyncio.to_thread(fetch_agile_prices, config, today)
             export_today = await asyncio.to_thread(fetch_export_prices, config, today)
             export_tomorrow = export_today if config.app.test_strategy_mode else await asyncio.to_thread(fetch_export_prices, config, tomorrow)
 
-            solar_today = await asyncio.to_thread(load_solar_forecast_influx, config, today) or [0.0] * 48
-            solar_tomorrow = await asyncio.to_thread(load_solar_forecast_influx, config, tomorrow)
-            solar_estimated = False
-            if solar_tomorrow is None:
+            solcast_today = None
+            solcast_tomorrow = None
+            if settings.collect_solcast:
+                solcast_today = await asyncio.to_thread(load_solar_forecast_influx, config, today, source="solcast")
+                solcast_tomorrow = await asyncio.to_thread(load_solar_forecast_influx, config, tomorrow, source="solcast")
+            if settings.collect_solcast and solcast_tomorrow is None:
                 try:
-                    solar_tomorrow = await asyncio.to_thread(fetch_solar_forecast, config, tomorrow)
+                    solcast_tomorrow = await asyncio.to_thread(fetch_solar_forecast, config, tomorrow)
                     try:
-                        await asyncio.to_thread(save_solar_forecast_influx, config, solar_tomorrow, tomorrow)
+                        await asyncio.to_thread(save_solar_forecast_influx, config, solcast_tomorrow, tomorrow, source="solcast")
                     except Exception as exc:
-                        import logging as _log
-                        _log.getLogger(__name__).warning("failed to cache tomorrow's forecast: %s", exc)
+                        logging.getLogger(__name__).warning("failed to cache tomorrow's Solcast forecast: %s", exc)
                 except Exception:
-                    solar_tomorrow = [0.0] * 48
-                    solar_estimated = True
+                    solcast_tomorrow = None
+
+            forecast_solar_today = None
+            forecast_solar_tomorrow = None
+            if settings.collect_forecast_solar:
+                forecast_solar_today = await asyncio.to_thread(load_solar_forecast_influx, config, today, source="forecast_solar")
+                forecast_solar_tomorrow = await asyncio.to_thread(load_solar_forecast_influx, config, tomorrow, source="forecast_solar")
+            if settings.collect_forecast_solar and forecast_solar_tomorrow is None:
+                try:
+                    forecast_solar_tomorrow = await asyncio.to_thread(fetch_forecast_solar, config, tomorrow)
+                    try:
+                        await asyncio.to_thread(
+                            save_solar_forecast_influx,
+                            config,
+                            forecast_solar_tomorrow,
+                            tomorrow,
+                            "forecast_solar",
+                        )
+                    except Exception as exc:
+                        logging.getLogger(__name__).warning("failed to cache tomorrow's forecast.solar forecast: %s", exc)
+                except Exception:
+                    forecast_solar_tomorrow = None
+
+            solar_today, _ = _select_forecast_slots(
+                settings.optimization_source,
+                solcast_today,
+                forecast_solar_today,
+            )
+            solar_tomorrow, solar_estimated = _select_forecast_slots(
+                settings.optimization_source,
+                solcast_tomorrow,
+                forecast_solar_tomorrow,
+            )
 
             load_today = await asyncio.to_thread(build_load_profile, config, today)
             load_tomorrow = await asyncio.to_thread(build_load_profile, config, tomorrow)
@@ -821,7 +1090,7 @@ class AppState(AuthState):
             export_today_eff = fill_unpublished_slots(export_today) if config.app.test_strategy_mode else export_today
             export_tomorrow_eff = fill_unpublished_slots(export_tomorrow) if config.app.test_strategy_mode else export_tomorrow
             agile = build_rolling_window(agile_for_today, agile_for_tomorrow, current_slot)
-            export = build_rolling_window(export_today, export_tomorrow_eff, current_slot)
+            export = build_rolling_window(export_today_eff, export_tomorrow_eff, current_slot)
             solar = build_rolling_window(solar_today, solar_tomorrow, current_slot)
             load = build_rolling_window(load_today, load_tomorrow, current_slot)
 
@@ -865,6 +1134,8 @@ class AppState(AuthState):
                 return
             self.today_poll_running = True
             self.today_loading = True
+            self.today_poll_generation += 1
+            my_gen = self.today_poll_generation
 
         last_strategy_valid_until: str = self.strategy_valid_until
         last_known_date: date | None = None
@@ -872,6 +1143,8 @@ class AppState(AuthState):
         try:
             while True:
                 async with self:
+                    if self.today_poll_generation != my_gen:
+                        return
                     if not self.current_user:
                         self.today_loading = False
                         return
@@ -940,56 +1213,21 @@ class AppState(AuthState):
                     # mode still works.
                         poll_interval = 300
                         try:
-                            sc = await asyncio.to_thread(fetch_standing_charge_p_per_day, config)
-                        except Exception:
-                            sc = config.octopus.standing_charge_p_per_day
-                        try:
-                            today_data = await asyncio.to_thread(get_today_live_data, config)
-                            load_profile = await asyncio.to_thread(build_load_profile, config, today_local)
-                            solar_forecast = load_solar_forecast_today(config, today_local.isoformat())
-                            if solar_forecast is None:
-                                try:
-                                    slots = await asyncio.to_thread(fetch_solar_forecast, config, today_local)
-                                    await asyncio.to_thread(save_solar_forecast_today, config, slots, today_local.isoformat())
-                                    solar_forecast = slots
-                                except Exception as exc:
-                                    import logging as _log
-                                    _log.getLogger(__name__).warning("solar forecast fetch failed in fallback: %s", exc)
-                            solar_forecast = solar_forecast or [0.0] * 48
-                            timestamps = today_data.timestamps
-                            chart_rows = []
-                            for i in range(48):
-                                chart_rows.append({
-                                    "time": timestamps[i],
-                                    "grid_import": round(today_data.actual_grid_import[i] or 0.0, 3),
-                                    "grid_export": round(today_data.actual_grid_export[i] or 0.0, 3),
-                                    "solar": round(today_data.actual_solar[i] or 0.0, 3),
-                                    "predicted_solar": round(solar_forecast[i], 3),
-                                    "soc_pct": (
-                                        (today_data.actual_battery_soc_kwh[i] or 0.0) / config.battery.capacity_kwh * 100
-                                        if today_data.actual_battery_soc_kwh[i] is not None else None
-                                    ),
-                                    "predicted_usage": load_profile[i],
-                                    "is_actual": i <= today_data.last_data_slot,
-                                })
-                            price_rows = [
-                                {"time": timestamps[i], "import": today_data.agile_prices[i], "export": today_data.export_prices[i]}
-                                for i in range(48)
-                            ]
+                            r = await _fetch_today_direct(config, today_local, log_context=" in fallback")
                             async with self:
-                                self.battery_soc_pct = round(today_data.battery_soc_pct, 1)
-                                self.battery_soc_kwh = round(today_data.battery_soc_kwh, 1)
-                                self.solar_today_kwh = round(today_data.solar_today_kwh, 2)
-                                self.grid_import_today_kwh = round(sum(v for v in today_data.actual_grid_import if v is not None), 2)
-                                self.grid_export_today_kwh = round(sum(v for v in today_data.actual_grid_export if v is not None), 2)
-                                self.grid_cost_gbp = round(today_data.grid_cost_pence / 100, 2)
-                                self.grid_export_revenue_gbp = round(today_data.grid_export_revenue_pence / 100, 2)
-                                self.net_daily_cost_gbp = round((today_data.grid_cost_pence - today_data.grid_export_revenue_pence + sc) / 100, 2)
-                                self.standing_charge_p_per_day = sc
-                                self.current_rate_p = round(today_data.current_rate_p, 1)
-                                self.current_export_rate_p = round(today_data.current_export_rate_p, 1)
-                                self.today_chart_data = chart_rows
-                                self.today_price_data = price_rows
+                                self.battery_soc_pct = r.battery_soc_pct
+                                self.battery_soc_kwh = r.battery_soc_kwh
+                                self.solar_today_kwh = r.solar_today_kwh
+                                self.grid_import_today_kwh = r.grid_import_today_kwh
+                                self.grid_export_today_kwh = r.grid_export_today_kwh
+                                self.grid_cost_gbp = r.grid_cost_gbp
+                                self.grid_export_revenue_gbp = r.grid_export_revenue_gbp
+                                self.net_daily_cost_gbp = r.net_daily_cost_gbp
+                                self.standing_charge_p_per_day = r.standing_charge_p_per_day
+                                self.current_rate_p = r.current_rate_p
+                                self.current_export_rate_p = r.current_export_rate_p
+                                self.today_chart_data = r.chart_data
+                                self.today_price_data = r.price_data
                                 self.today_error = ""
                                 self.today_loading = False
                         except Exception as exc:
@@ -1007,8 +1245,7 @@ class AppState(AuthState):
                                 self.today_weather_code = code
                                 self.today_weather_max_temp_c = max_temp
                         except Exception as exc:
-                            import logging as _wlog
-                            _wlog.getLogger(__name__).warning("weather fetch failed: %s", exc)
+                            logging.getLogger(__name__).warning("weather fetch failed: %s", exc)
 
                     # Pick up strategy updates written by the worker without a separate loop
                     cached = await asyncio.to_thread(load_strategy)
@@ -1025,16 +1262,61 @@ class AppState(AuthState):
 
                 except Exception as exc:
                     # Catch-all so the polling loop never dies silently
-                    import logging as _logging
-                    _logging.getLogger(__name__).error("refresh_today_data loop error: %s", exc, exc_info=True)
+                    logging.getLogger(__name__).error("refresh_today_data loop error: %s", exc, exc_info=True)
 
                 await asyncio.sleep(poll_interval)
         finally:
             async with self:
-                self.today_poll_running = False
+                if self.today_poll_generation == my_gen:
+                    self.today_poll_running = False
+
+    @rx.event(background=True)
+    async def refresh_today_now(self):
+        """Immediately refresh today data and populate any missing forecast caches.
+
+        Unlike the normal polling path, this bypasses the worker snapshot and fetches
+        live data directly so the Refresh button can warm missing Solcast and
+        forecast.solar caches on demand.
+        """
+        config = _get_config()
+        tz = ZoneInfo(config.app.timezone)
+        today_local = datetime.now(tz).date()
+
+        async with self:
+            self.today_loading = True
+            self.today_error = ""
+
+        try:
+            r = await _fetch_today_direct(config, today_local, log_context=" on manual refresh")
+            async with self:
+                self.battery_soc_pct = r.battery_soc_pct
+                self.battery_soc_kwh = r.battery_soc_kwh
+                self.solar_today_kwh = r.solar_today_kwh
+                self.grid_import_today_kwh = r.grid_import_today_kwh
+                self.grid_export_today_kwh = r.grid_export_today_kwh
+                self.grid_cost_gbp = r.grid_cost_gbp
+                self.grid_export_revenue_gbp = r.grid_export_revenue_gbp
+                self.net_daily_cost_gbp = r.net_daily_cost_gbp
+                self.standing_charge_p_per_day = r.standing_charge_p_per_day
+                self.current_rate_p = r.current_rate_p
+                self.current_export_rate_p = r.current_export_rate_p
+                self.today_chart_data = r.chart_data
+                self.today_price_data = r.price_data
+                self.today_error = ""
+                self.today_loading = False
+            yield rx.toast.success(
+                "Today data refreshed.",
+                duration=3000,
+                close_button=True,
+            )
+        except Exception as exc:
+            async with self:
+                self.today_error = str(exc)
+                self.today_loading = False
 
     @rx.event
     def restart_today_polling(self):
+        self.today_poll_generation += 1
         self.today_poll_running = False
         self.today_loading = False
-        return AppState.refresh_today_data
+        yield AppState.refresh_today_data

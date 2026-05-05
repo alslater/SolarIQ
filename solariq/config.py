@@ -11,6 +11,7 @@ class InfluxConfig:
     solar_database: str
     solax_database: str
     solcast_forecast_database: str
+    forecast_solar_forecast_database: str
 
 
 @dataclass
@@ -27,6 +28,15 @@ class OctopusConfig:
 class SolcastConfig:
     api_key: str
     resource_id: str
+
+
+@dataclass
+class ForecastSolarConfig:
+    base_url: str
+    api_key: str
+    declination: int
+    azimuth: int
+    peak_power_kw: float
 
 
 @dataclass
@@ -67,6 +77,7 @@ class SolarIQConfig:
     influxdb: InfluxConfig
     octopus: OctopusConfig
     solcast: SolcastConfig
+    forecast_solar: ForecastSolarConfig
     battery: BatteryConfig
     app: AppConfig
     location: LocationConfig
@@ -85,6 +96,9 @@ def load_config(path: str = "solariq.ini") -> SolarIQConfig:
             solar_database=parser.get("influxdb", "solar_database", fallback="solar"),
             solax_database=parser.get("influxdb", "solax_database", fallback="solax"),
             solcast_forecast_database=parser.get("influxdb", "solcast_forecast_database", fallback="solcast"),
+            forecast_solar_forecast_database=parser.get(
+                "influxdb", "forecast_solar_forecast_database", fallback="forecast_solar"
+            ),
         ),
         octopus=OctopusConfig(
             api_key=parser.get("octopus", "api_key"),
@@ -97,6 +111,13 @@ def load_config(path: str = "solariq.ini") -> SolarIQConfig:
         solcast=SolcastConfig(
             api_key=parser.get("solcast", "api_key"),
             resource_id=parser.get("solcast", "resource_id"),
+        ),
+        forecast_solar=ForecastSolarConfig(
+            base_url=parser.get("forecast_solar", "base_url", fallback="https://api.forecast.solar"),
+            api_key=parser.get("forecast_solar", "api_key", fallback=""),
+            declination=parser.getint("forecast_solar", "declination", fallback=35),
+            azimuth=parser.getint("forecast_solar", "azimuth", fallback=0),
+            peak_power_kw=parser.getfloat("forecast_solar", "peak_power_kw", fallback=4.0),
         ),
         battery=BatteryConfig(
             capacity_kwh=parser.getfloat("battery", "capacity_kwh", fallback=23.2),

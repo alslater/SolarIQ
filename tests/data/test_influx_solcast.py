@@ -90,3 +90,14 @@ def test_load_solar_forecast_influx_returns_none_when_partial(config):
         result = load_solar_forecast_influx(config, date(2026, 4, 1))
 
     assert result is None
+
+
+def test_load_solar_forecast_influx_returns_none_when_database_missing(config):
+    """A missing forecast database is treated as a normal cache miss."""
+    mock_client = MagicMock()
+    mock_client.query.side_effect = Exception("database not found: forecast_solar")
+
+    with patch("solariq.data.influx.InfluxDBClient", return_value=mock_client):
+        result = load_solar_forecast_influx(config, date(2026, 4, 1), source="forecast_solar")
+
+    assert result is None
