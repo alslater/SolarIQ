@@ -152,9 +152,7 @@ def settings_tab() -> rx.Component:
                 style=_ITEM_STYLE,
             ),
             # ── Users (admin only) ───────────────────────────────────────────
-            rx.cond(
-                AppState.current_user_is_admin,
-                rx.accordion.item(
+            rx.accordion.item(
                     header=rx.text("Users", style=_HEADING),
                     content=rx.box(
                         rx.text(
@@ -425,9 +423,8 @@ def settings_tab() -> rx.Component:
                     ),
                     value="users",
                     style=_ITEM_STYLE,
+                    display=rx.cond(AppState.current_user_is_admin, "block", "none"),
                 ),
-                rx.fragment(),
-            ),
             # ── Export Calibration ───────────────────────────────────────────
             rx.accordion.item(
                 header=rx.text("Export Calibration", style=_HEADING),
@@ -507,9 +504,7 @@ def settings_tab() -> rx.Component:
                 style=_ITEM_STYLE,
             ),
             # ── Forecast Sources (admin only) ────────────────────────────────
-            rx.cond(
-                AppState.current_user_is_admin,
-                rx.accordion.item(
+            rx.accordion.item(
                     header=rx.text("Forecast Sources", style=_HEADING),
                     content=rx.box(
                         rx.text(
@@ -563,13 +558,10 @@ def settings_tab() -> rx.Component:
                     ),
                     value="forecast_sources",
                     style=_ITEM_STYLE,
+                    display=rx.cond(AppState.current_user_is_admin, "block", "none"),
                 ),
-                rx.fragment(),
-            ),
             # ── Cache (admin only) ───────────────────────────────────────────
-            rx.cond(
-                AppState.current_user_is_admin,
-                rx.accordion.item(
+            rx.accordion.item(
                     header=rx.text("Cache", style=_HEADING),
                     content=rx.box(
                         rx.text(
@@ -598,11 +590,9 @@ def settings_tab() -> rx.Component:
                     ),
                     value="cache",
                     style=_ITEM_STYLE,
+                    display=rx.cond(AppState.current_user_is_admin, "block", "none"),
                 ),
-                rx.fragment(),
-            ),
             type="multiple",
-            collapsible=True,
             variant="ghost",
             width="100%",
             style={"background": "transparent", "box_shadow": "none"},
