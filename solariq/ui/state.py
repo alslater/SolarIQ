@@ -1156,6 +1156,7 @@ class AppState(AuthState):
 
         last_strategy_valid_until: str = self.strategy_valid_until
         last_known_date: date | None = None
+        last_weather_fetch_at: datetime | None = None
 
         try:
             while True:
@@ -1175,7 +1176,8 @@ class AppState(AuthState):
                 try:
                     config = _get_config()
                     tz = ZoneInfo(config.app.timezone)
-                    today_local = datetime.now(tz).date()
+                    now_local = datetime.now(tz)
+                    today_local = now_local.date()
 
                     # Detect date rollover — reset today's data so stale figures don't linger
                     if last_known_date is not None and today_local != last_known_date:
@@ -1195,6 +1197,7 @@ class AppState(AuthState):
                             self.today_error = ""
                             self.today_weather_code = -1
                             self.today_weather_max_temp_c = 0.0
+                        last_weather_fetch_at = None
                     last_known_date = today_local
 
                     snapshot = await asyncio.to_thread(load_today_snapshot)
@@ -1257,15 +1260,18 @@ class AppState(AuthState):
                                 self.today_error = str(exc)
                                 self.today_loading = False
 
-                    # Fetch today's weather once per day
+                    # Refresh weather at most every 15 minutes, or immediately if unknown.
                     async with self:
                         need_weather = self.today_weather_code < 0
+                    if not need_weather and last_weather_fetch_at is not None:
+                        need_weather = (now_local - last_weather_fetch_at) >= timedelta(minutes=15)
                     if need_weather:
                         try:
                             code, max_temp = await asyncio.to_thread(fetch_today_weather, config)
                             async with self:
                                 self.today_weather_code = code
                                 self.today_weather_max_temp_c = max_temp
+                            last_weather_fetch_at = now_local
                         except Exception as exc:
                             logging.getLogger(__name__).warning("weather fetch failed: %s", exc)
 
@@ -1326,6 +1332,16 @@ class AppState(AuthState):
                 self.today_price_data = r.price_data
                 self.today_error = ""
                 self.today_loading = False
+
+            # Manual refresh should also update weather immediately.
+            try:
+                code, max_temp = await asyncio.to_thread(fetch_today_weather, config)
+                async with self:
+                    self.today_weather_code = code
+                    self.today_weather_max_temp_c = max_temp
+            except Exception as exc:
+                logging.getLogger(__name__).warning("weather fetch failed on manual refresh: %s", exc)
+
             yield rx.toast.success(
                 "Today data refreshed.",
                 duration=3000,
