@@ -210,6 +210,7 @@ class AppState(AuthState):
     show_self_use_implicit: bool = True
     show_self_use_explicit: bool = True
     show_charge: bool = True
+    show_battery_standby: bool = True
     sort_strategy_by_time: bool = False
 
     # Tomorrow charts
@@ -932,6 +933,8 @@ class AppState(AuthState):
             end = start_slots[i + 1] if i + 1 < len(start_slots) else 48
             if period.mode == "Charge":
                 mode_label = "Charge"
+            elif period.mode == "Battery Standby":
+                mode_label = "Battery Standby"
             elif period.is_default:
                 mode_label = "Self Use (Implicit)"
             else:
@@ -951,6 +954,7 @@ class AppState(AuthState):
                     "price_charge": price if mode_label == "Charge" else 0.0,
                     "price_self_use_explicit": price if mode_label == "Self Use (Explicit)" else 0.0,
                     "price_self_use_implicit": price if mode_label == "Self Use (Implicit)" else 0.0,
+                    "price_standby": result.export_prices[t] if mode_label == "Battery Standby" else 0.0,
                 }
             )
         self.tomorrow_solar_data = [
@@ -986,6 +990,11 @@ class AppState(AuthState):
                     filtered.append(period)
                 continue
 
+            if mode == "Battery Standby":
+                if self.show_battery_standby:
+                    filtered.append(period)
+                continue
+
             if mode == "Self Use":
                 is_default = period.get("is_default", period.get("min_soc_pct", 10) <= 10)
                 if is_default and self.show_self_use_implicit:
@@ -1007,6 +1016,10 @@ class AppState(AuthState):
     @rx.event
     def toggle_show_charge(self):
         self.show_charge = not self.show_charge
+
+    @rx.event
+    def toggle_show_battery_standby(self):
+        self.show_battery_standby = not self.show_battery_standby
 
     @rx.event
     def toggle_sort_strategy_by_time(self):

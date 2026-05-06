@@ -283,7 +283,7 @@ def _maybe_refresh_strategy() -> None:
 
         agile_today = fetch_agile_prices(config, today)
         export_today = fetch_export_prices(config, today)
-        export_tomorrow = fetch_export_prices(config, tomorrow) if not config.app.test_strategy_mode else export_today
+        export_tomorrow = fetch_export_prices(config, tomorrow)
 
         solcast_today = load_solar_forecast_influx(config, today, source="solcast") if settings.collect_solcast else None
         solcast_tomorrow = load_solar_forecast_influx(config, tomorrow, source="solcast") if settings.collect_solcast else None
@@ -328,10 +328,23 @@ def _maybe_refresh_strategy() -> None:
         load_today = build_load_profile(config, today)
         load_tomorrow = build_load_profile(config, tomorrow)
 
-        agile_for_today = fill_unpublished_slots(agile_today) if config.app.test_strategy_mode else agile_today
-        agile_for_tomorrow = fill_unpublished_slots(agile_today) if config.app.test_strategy_mode else agile_tomorrow
-        export_today_eff = fill_unpublished_slots(export_today) if config.app.test_strategy_mode else export_today
-        export_tomorrow_eff = fill_unpublished_slots(export_tomorrow) if config.app.test_strategy_mode else export_tomorrow
+        if config.app.test_strategy_mode:
+            tomorrow_agile_published = any(p < UNPUBLISHED_RATE_CAP_P for p in agile_tomorrow)
+            agile_for_today = fill_unpublished_slots(agile_today)
+            agile_for_tomorrow = agile_tomorrow if tomorrow_agile_published else fill_unpublished_slots(agile_today)
+            export_today_eff = fill_unpublished_slots(export_today)
+            tomorrow_export_published = any(p < UNPUBLISHED_RATE_CAP_P for p in export_tomorrow)
+            export_tomorrow_eff = export_tomorrow if tomorrow_export_published else fill_unpublished_slots(export_today)
+            logger.info(
+                "[TEST MODE] agile tomorrow: %s, export tomorrow: %s",
+                "published" if tomorrow_agile_published else "using today's",
+                "published" if tomorrow_export_published else "using today's",
+            )
+        else:
+            agile_for_today = agile_today
+            agile_for_tomorrow = agile_tomorrow
+            export_today_eff = export_today
+            export_tomorrow_eff = export_tomorrow
         agile = build_rolling_window(agile_for_today, agile_for_tomorrow, current_slot)
         export = build_rolling_window(export_today_eff, export_tomorrow_eff, current_slot)
         solar = build_rolling_window(solar_today_selected, solar_tomorrow_selected, current_slot)

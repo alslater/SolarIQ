@@ -23,6 +23,8 @@ def build_problem(
     battery_charge, battery_discharge, battery_soc, charge_mode, grid_direction.
     Each maps to a dict keyed by slot index 0-47.
 
+    Standby mode is NOT a MILP variable; it is inferred post-solve in solver.py.
+
     Energy balance per slot:
       grid_import[t] + solar[t] + battery_discharge[t]
         = load[t] + battery_charge[t] + grid_export[t]
@@ -83,7 +85,7 @@ def build_problem(
         prob += battery_charge[t] <= M
         prob += battery_discharge[t] <= M
 
-        # No discharge during charge periods (SolaX "hold" behaviour)
+        # No discharge during charge periods
         prob += battery_discharge[t] <= (1 - charge_mode[t]) * M
 
         # Grid-to-battery only in charge periods

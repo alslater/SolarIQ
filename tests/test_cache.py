@@ -21,6 +21,7 @@ def _sample_result() -> OptimizationResult:
         battery_soc_forecast=[10.0] * 48,
         grid_import_forecast=[0.3] * 48,
         charge_mode_slots=[False] * 48,
+        standby_mode_slots=[False] * 48,
     )
 
 

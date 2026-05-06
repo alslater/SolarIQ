@@ -162,6 +162,13 @@ def tomorrow_tab() -> rx.Component:
                         variant=rx.cond(AppState.show_charge, "solid", "soft"),
                         style={"font_size": "11px", "cursor": "pointer"},
                     ),
+                    rx.button(
+                        "Battery Standby",
+                        on_click=AppState.toggle_show_battery_standby,
+                        size="1",
+                        variant=rx.cond(AppState.show_battery_standby, "solid", "soft"),
+                        style={"font_size": "11px", "cursor": "pointer"},
+                    ),
                     rx.separator(orientation="vertical", style={"height": "16px"}),
                     rx.text(
                         "Sort:",
@@ -216,6 +223,13 @@ def tomorrow_tab() -> rx.Component:
                         data_key="price_charge",
                         name="Charge",
                         fill=t.CHART_PRICE,
+                        radius=[2, 2, 0, 0],
+                        stack_id="price",
+                    ),
+                    rx.recharts.bar(
+                        data_key="price_standby",
+                        name="Battery Standby",
+                        fill="#a855f7",
                         radius=[2, 2, 0, 0],
                         stack_id="price",
                     ),

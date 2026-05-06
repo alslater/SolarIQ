@@ -74,6 +74,15 @@ def solve(
     battery_soc_forecast = [val(variables["battery_soc"][t]) for t in range(SLOTS)]
     grid_import_forecast = [val(variables["grid_import"][t]) for t in range(SLOTS)]
     charge_mode_slots = [bool(round(val(variables["charge_mode"][t]))) for t in range(SLOTS)]
+    battery_charge_vals = [val(variables["battery_charge"][t]) for t in range(SLOTS)]
+    battery_discharge_vals = [val(variables["battery_discharge"][t]) for t in range(SLOTS)]
+    standby_mode_slots = [
+        not charge_mode_slots[t]
+        and battery_charge_vals[t] < 0.01
+        and battery_discharge_vals[t] < 0.01
+        and solar[t] > load[t]
+        for t in range(SLOTS)
+    ]
 
     estimated_cost_pence = sum(
         grid_import_forecast[t] * agile_prices[t]
@@ -85,8 +94,10 @@ def solve(
 
     periods = build_strategy_periods(
         charge_mode_slots=charge_mode_slots,
+        standby_mode_slots=standby_mode_slots,
         battery_soc_forecast=battery_soc_forecast,
         agile_prices=agile_prices,
+        export_prices=export_prices,
         config=config,
         window_start=window_start,
     )
@@ -108,4 +119,5 @@ def solve(
         battery_soc_forecast=battery_soc_forecast,
         grid_import_forecast=grid_import_forecast,
         charge_mode_slots=charge_mode_slots,
+        standby_mode_slots=standby_mode_slots,
     )

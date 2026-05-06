@@ -7,7 +7,7 @@ class StrategyPeriod:
     period_num: int
     start_time: str                          # "HH:MM"
     end_time: str                            # "HH:MM"
-    mode: Literal["Self Use", "Charge"]
+    mode: Literal["Self Use", "Charge", "Battery Standby"]
     min_soc_pct: int = 10                    # Self Use only
     target_soc_pct: int = 0                  # Charge only
     max_charge_w: int = 0                    # Charge only
@@ -44,6 +44,7 @@ class OptimizationResult:
     battery_soc_forecast: list[float]       # 48 values, kWh
     grid_import_forecast: list[float]       # 48 values, kWh
     charge_mode_slots: list[bool]           # 48 values
+    standby_mode_slots: list[bool]          # 48 values, True = Battery Standby
     solar_forecast_estimated: bool = False  # True when Solcast unavailable and zeros were used
 
     def to_dict(self) -> dict:
@@ -62,6 +63,7 @@ class OptimizationResult:
             "battery_soc_forecast": self.battery_soc_forecast,
             "grid_import_forecast": self.grid_import_forecast,
             "charge_mode_slots": self.charge_mode_slots,
+            "standby_mode_slots": self.standby_mode_slots,
             "solar_forecast_estimated": self.solar_forecast_estimated,
         }
 
@@ -86,6 +88,7 @@ class OptimizationResult:
             battery_soc_forecast=d["battery_soc_forecast"],
             grid_import_forecast=d["grid_import_forecast"],
             charge_mode_slots=d["charge_mode_slots"],
+            standby_mode_slots=d.get("standby_mode_slots", [False] * 48),
             solar_forecast_estimated=d.get("solar_forecast_estimated", False),
         )
 

@@ -21,9 +21,11 @@ def test_slot_to_time():
 
 def test_all_self_use_gives_one_period(config):
     charge_mode = [False] * SLOTS
+    standby_mode = [False] * SLOTS
     soc = [config.battery.min_soc_kwh] * SLOTS
     prices = [15.0] * SLOTS
-    periods = build_strategy_periods(charge_mode, soc, prices, config)
+    export = [10.0] * SLOTS
+    periods = build_strategy_periods(charge_mode, standby_mode, soc, prices, export, config)
     assert len(periods) == 1
     assert periods[0].mode == "Self Use"
     assert periods[0].start_time == "00:00"
@@ -34,11 +36,13 @@ def test_all_self_use_gives_one_period(config):
 
 def test_one_charge_block_gives_three_periods(config):
     charge_mode = [False] * SLOTS
+    standby_mode = [False] * SLOTS
     for i in range(4, 10):  # 02:00-05:00
         charge_mode[i] = True
     soc = [config.battery.min_soc_kwh] * 4 + [12.0, 14.0, 16.0, 18.0, 20.0, 22.0] + [22.0] * 38
     prices = [15.0] * SLOTS
-    periods = build_strategy_periods(charge_mode, soc, prices, config)
+    export = [10.0] * SLOTS
+    periods = build_strategy_periods(charge_mode, standby_mode, soc, prices, export, config)
     assert len(periods) == 3
     assert periods[0].mode == "Self Use"
     assert periods[1].mode == "Charge"
@@ -50,10 +54,12 @@ def test_one_charge_block_gives_three_periods(config):
 
 def test_charge_period_target_soc_is_end_soc_pct(config):
     charge_mode = [False] * 4 + [True] * 6 + [False] * 38
+    standby_mode = [False] * SLOTS
     # SOC rises from 10 to 15 kWh during charge (15/23.2*100 ≈ 65%)
     soc = [10.0] * 4 + [11.0, 12.0, 13.0, 14.0, 15.0, 15.0] + [15.0] * 38
     prices = [15.0] * SLOTS
-    periods = build_strategy_periods(charge_mode, soc, prices, config)
+    export = [10.0] * SLOTS
+    periods = build_strategy_periods(charge_mode, standby_mode, soc, prices, export, config)
     charge_period = next(p for p in periods if p.mode == "Charge")
     # 15/23.2 * 100 = 64.6% → rounded to nearest 5 = 65%
     assert charge_period.target_soc_pct == 65
@@ -62,6 +68,7 @@ def test_charge_period_target_soc_is_end_soc_pct(config):
 def test_max_periods_capped_at_10(config):
     # 6 charge blocks would give 7 self-use + 6 charge = 13 periods; should be capped at 10
     charge_mode = [False] * SLOTS
+    standby_mode = [False] * SLOTS
     for block in range(6):
         start = block * 8
         for i in range(start, start + 2):
@@ -69,24 +76,29 @@ def test_max_periods_capped_at_10(config):
                 charge_mode[i] = True
     soc = [10.0] * SLOTS
     prices = [15.0] * SLOTS
-    periods = build_strategy_periods(charge_mode, soc, prices, config)
+    export = [10.0] * SLOTS
+    periods = build_strategy_periods(charge_mode, standby_mode, soc, prices, export, config)
     assert len(periods) <= 10
 
 
 def test_self_use_period_has_min_soc(config):
     charge_mode = [False] * SLOTS
+    standby_mode = [False] * SLOTS
     soc = [config.battery.min_soc_kwh] * SLOTS
     prices = [15.0] * SLOTS
-    periods = build_strategy_periods(charge_mode, soc, prices, config)
+    export = [10.0] * SLOTS
+    periods = build_strategy_periods(charge_mode, standby_mode, soc, prices, export, config)
     assert periods[0].min_soc_pct == 10
 
 
 def test_explicit_self_use_period_can_be_above_default(config):
     charge_mode = [False] * SLOTS
+    standby_mode = [False] * SLOTS
     # Hold SOC around 50% all day -> explicit self-use min SOC should be > 10%.
     soc = [11.6] * SLOTS
     prices = [15.0] * SLOTS
-    periods = build_strategy_periods(charge_mode, soc, prices, config)
+    export = [10.0] * SLOTS
+    periods = build_strategy_periods(charge_mode, standby_mode, soc, prices, export, config)
     assert len(periods) == 1
     assert periods[0].mode == "Self Use"
     assert periods[0].is_default is False
@@ -95,9 +107,11 @@ def test_explicit_self_use_period_can_be_above_default(config):
 
 def test_charge_period_has_max_charge_power(config):
     charge_mode = [False] * 4 + [True] * 6 + [False] * 38
+    standby_mode = [False] * SLOTS
     soc = [10.0] * SLOTS
     prices = [15.0] * SLOTS
-    periods = build_strategy_periods(charge_mode, soc, prices, config)
+    export = [10.0] * SLOTS
+    periods = build_strategy_periods(charge_mode, standby_mode, soc, prices, export, config)
     charge_period = next(p for p in periods if p.mode == "Charge")
     assert charge_period.max_charge_w == 7500
 
@@ -155,9 +169,11 @@ def test_build_strategy_periods_with_window_start_18(config):
     tz = ZoneInfo("Europe/London")
     window_start = datetime(2026, 4, 1, 18, 0, tzinfo=tz)
     charge_mode = [False] * 6 + [True] * 6 + [False] * 36
+    standby_mode = [False] * SLOTS
     soc = [10.0] * 6 + [12.0, 14.0, 16.0, 18.0, 20.0, 22.0] + [22.0] * 36
     prices = [15.0] * SLOTS
-    periods = build_strategy_periods(charge_mode, soc, prices, config, window_start=window_start)
+    export = [10.0] * SLOTS
+    periods = build_strategy_periods(charge_mode, standby_mode, soc, prices, export, config, window_start=window_start)
     charge_period = next(p for p in periods if p.mode == "Charge")
     # Slot 6 from 18:00 = 18:00 + 6*30min = 21:00
     assert charge_period.start_time == "21:00"
@@ -168,9 +184,11 @@ def test_build_strategy_periods_with_window_start_18(config):
 def test_build_strategy_periods_with_window_start_none_unchanged(config):
     """Without window_start, behaviour is unchanged (midnight-anchored)."""
     charge_mode = [False] * 4 + [True] * 6 + [False] * 38
+    standby_mode = [False] * SLOTS
     soc = [10.0] * SLOTS
     prices = [15.0] * SLOTS
-    periods = build_strategy_periods(charge_mode, soc, prices, config)
+    export = [10.0] * SLOTS
+    periods = build_strategy_periods(charge_mode, standby_mode, soc, prices, export, config)
     charge_period = next(p for p in periods if p.mode == "Charge")
     assert charge_period.start_time == "02:00"
     assert charge_period.end_time == "05:00"
@@ -181,9 +199,11 @@ def test_build_strategy_periods_end_sentinel_with_window_start(config):
     tz = ZoneInfo("Europe/London")
     window_start = datetime(2026, 4, 1, 18, 0, tzinfo=tz)
     charge_mode = [False] * SLOTS  # all self-use, one period covering full window
+    standby_mode = [False] * SLOTS
     soc = [10.0] * SLOTS
     prices = [15.0] * SLOTS
-    periods = build_strategy_periods(charge_mode, soc, prices, config, window_start=window_start)
+    export = [10.0] * SLOTS
+    periods = build_strategy_periods(charge_mode, standby_mode, soc, prices, export, config, window_start=window_start)
     # Full window ends at 18:00 next day
     assert periods[-1].end_time == "18:00"
 
@@ -195,9 +215,11 @@ def test_charge_block_crossing_midnight_is_split(config):
     window_start = datetime(2026, 4, 1, 22, 0, tzinfo=tz)
     # Charge from slot 2 (23:00) to slot 6 (01:00) crosses midnight at slot 4
     charge_mode = [False] * 2 + [True] * 4 + [False] * 42
+    standby_mode = [False] * SLOTS
     soc = [10.0] * 2 + [11.0, 12.0, 13.0, 14.0] + [14.0] * 42
     prices = [10.0] * SLOTS
-    periods = build_strategy_periods(charge_mode, soc, prices, config, window_start=window_start)
+    export = [10.0] * SLOTS
+    periods = build_strategy_periods(charge_mode, standby_mode, soc, prices, export, config, window_start=window_start)
     charge_periods = [p for p in periods if p.mode == "Charge"]
     assert len(charge_periods) == 2
     assert charge_periods[0].start_time == "23:00"
@@ -212,9 +234,11 @@ def test_self_use_block_crossing_midnight_is_split(config):
     # Window starts at 23:00; midnight at slot 2 (23:00 + 2*30min = 00:00)
     window_start = datetime(2026, 4, 1, 23, 0, tzinfo=tz)
     charge_mode = [False] * SLOTS
+    standby_mode = [False] * SLOTS
     soc = [10.0] * SLOTS
     prices = [10.0] * SLOTS
-    periods = build_strategy_periods(charge_mode, soc, prices, config, window_start=window_start)
+    export = [10.0] * SLOTS
+    periods = build_strategy_periods(charge_mode, standby_mode, soc, prices, export, config, window_start=window_start)
     # The single self-use block must have been split at midnight
     times = [(p.start_time, p.end_time) for p in periods]
     assert ("23:00", "00:00") in times
@@ -228,9 +252,11 @@ def test_block_not_crossing_midnight_is_not_split(config):
     window_start = datetime(2026, 4, 1, 22, 0, tzinfo=tz)
     # Charge from slot 0 (22:00) to slot 3 (23:30) — fully before midnight
     charge_mode = [True] * 3 + [False] * 45
+    standby_mode = [False] * SLOTS
     soc = [10.0, 12.0, 14.0] + [14.0] * 45
     prices = [10.0] * SLOTS
-    periods = build_strategy_periods(charge_mode, soc, prices, config, window_start=window_start)
+    export = [10.0] * SLOTS
+    periods = build_strategy_periods(charge_mode, standby_mode, soc, prices, export, config, window_start=window_start)
     charge_periods = [p for p in periods if p.mode == "Charge"]
     assert len(charge_periods) == 1
     assert charge_periods[0].start_time == "22:00"
@@ -240,9 +266,11 @@ def test_block_not_crossing_midnight_is_not_split(config):
 def test_no_midnight_split_when_window_start_none(config):
     """Without window_start, midnight-split logic is skipped."""
     charge_mode = [True] * 4 + [False] * 44
+    standby_mode = [False] * SLOTS
     soc = [10.0, 11.0, 12.0, 13.0] + [13.0] * 44
     prices = [10.0] * SLOTS
-    periods = build_strategy_periods(charge_mode, soc, prices, config)
+    export = [10.0] * SLOTS
+    periods = build_strategy_periods(charge_mode, standby_mode, soc, prices, export, config)
     charge_periods = [p for p in periods if p.mode == "Charge"]
     assert len(charge_periods) == 1
 
@@ -265,9 +293,11 @@ def test_no_split_when_window_starts_at_midnight(config):
     # Charge from slot 0 (00:00) through slot 5 (02:30) — would cross a spurious
     # midnight if slot 0 were mistakenly treated as a split point.
     charge_mode = [True] * 6 + [False] * 42
+    standby_mode = [False] * SLOTS
     soc = [10.0, 11.0, 12.0, 13.0, 14.0, 15.0] + [15.0] * 42
     prices = [10.0] * SLOTS
-    periods = build_strategy_periods(charge_mode, soc, prices, config, window_start=window_start)
+    export = [10.0] * SLOTS
+    periods = build_strategy_periods(charge_mode, standby_mode, soc, prices, export, config, window_start=window_start)
     charge_periods = [p for p in periods if p.mode == "Charge"]
     assert len(charge_periods) == 1
     assert charge_periods[0].start_time == "00:00"
@@ -285,11 +315,108 @@ def test_no_split_when_midnight_falls_on_block_boundary(config):
     # Charge block ends exactly at slot 4 — boundary aligns with midnight.
     window_start = datetime(2026, 4, 1, 22, 0, tzinfo=tz)
     charge_mode = [True] * 4 + [False] * 44   # charge 22:00-00:00, self-use 00:00-22:00
+    standby_mode = [False] * SLOTS
     soc = [10.0, 12.0, 14.0, 16.0] + [16.0] * 44
     prices = [10.0] * SLOTS
-    periods = build_strategy_periods(charge_mode, soc, prices, config, window_start=window_start)
+    export = [10.0] * SLOTS
+    periods = build_strategy_periods(charge_mode, standby_mode, soc, prices, export, config, window_start=window_start)
     charge_periods = [p for p in periods if p.mode == "Charge"]
     # Block ends at midnight — no split needed, still exactly one charge period
     assert len(charge_periods) == 1
     assert charge_periods[0].start_time == "22:00"
     assert charge_periods[0].end_time == "00:00"
+
+
+def test_all_standby_gives_one_standby_period(config):
+    charge_mode = [False] * SLOTS
+    standby_mode = [True] * SLOTS
+    soc = [config.battery.min_soc_kwh] * SLOTS
+    agile = [15.0] * SLOTS
+    export = [12.0] * SLOTS
+    periods = build_strategy_periods(charge_mode, standby_mode, soc, agile, export, config)
+    assert len(periods) == 1
+    assert periods[0].mode == "Battery Standby"
+    assert periods[0].is_default is False
+    assert abs(periods[0].avg_price_p - 12.0) < 0.01
+
+
+def test_standby_block_flanked_by_self_use_gives_three_periods(config):
+    charge_mode = [False] * SLOTS
+    standby_mode = [False] * SLOTS
+    for i in range(4, 10):  # 02:00-05:00
+        standby_mode[i] = True
+    soc = [config.battery.min_soc_kwh] * SLOTS
+    agile = [15.0] * SLOTS
+    export = [12.0] * SLOTS
+    periods = build_strategy_periods(charge_mode, standby_mode, soc, agile, export, config)
+    assert len(periods) == 3
+    assert periods[0].mode == "Self Use"
+    assert periods[1].mode == "Battery Standby"
+    assert periods[1].start_time == "02:00"
+    assert periods[1].end_time == "05:00"
+    assert periods[2].mode == "Self Use"
+
+
+def test_standby_avg_price_uses_export_prices(config):
+    charge_mode = [False] * SLOTS
+    standby_mode = [False] * SLOTS
+    for i in range(4, 8):   # 02:00-04:00
+        standby_mode[i] = True
+    soc = [config.battery.min_soc_kwh] * SLOTS
+    agile = [15.0] * SLOTS
+    export = [10.0] * SLOTS
+    export[4] = 20.0
+    export[5] = 30.0
+    export[6] = 40.0
+    export[7] = 50.0
+    periods = build_strategy_periods(charge_mode, standby_mode, soc, agile, export, config)
+    standby_period = next(p for p in periods if p.mode == "Battery Standby")
+    assert abs(standby_period.avg_price_p - 35.0) < 0.01  # (20+30+40+50)/4
+
+
+def test_standby_collapsed_before_charge_when_over_10_periods(config):
+    """When both standby and charge blocks exceed 10 periods, smallest standby blocks removed first."""
+    charge_mode = [False] * SLOTS
+    standby_mode = [False] * SLOTS
+    # 3 charge blocks of 2 slots each
+    for block in range(3):
+        start = block * 16
+        charge_mode[start] = True
+        charge_mode[start + 1] = True
+    # 3 standby blocks of 1 slot each (smaller than charge blocks)
+    for block in range(3):
+        start = block * 16 + 4
+        standby_mode[start] = True
+
+    soc = [config.battery.min_soc_kwh] * SLOTS
+    agile = [15.0] * SLOTS
+    export = [12.0] * SLOTS
+    periods = build_strategy_periods(charge_mode, standby_mode, soc, agile, export, config)
+    explicit_count = sum(
+        1 for p in periods
+        if p.mode in ("Charge", "Battery Standby") or (p.mode == "Self Use" and not p.is_default)
+    )
+    assert explicit_count <= 10
+
+
+def test_standby_period_split_at_midnight(config):
+    """A standby block spanning midnight must be split into two periods."""
+    window_start = datetime(2026, 1, 1, 22, 0, tzinfo=ZoneInfo("Europe/London"))
+    charge_mode = [False] * SLOTS
+    # standby spans slots 0-5 (22:00-01:00), which crosses midnight at slot 4
+    standby_mode = [False] * SLOTS
+    for i in range(6):
+        standby_mode[i] = True
+    soc = [config.battery.min_soc_kwh] * SLOTS
+    agile = [15.0] * SLOTS
+    export = [12.0] * SLOTS
+    periods = build_strategy_periods(
+        charge_mode, standby_mode, soc, agile, export, config, window_start=window_start
+    )
+    standby_periods = [p for p in periods if p.mode == "Battery Standby"]
+    assert len(standby_periods) == 2, (
+        f"Expected 2 standby periods (split at midnight), got {len(standby_periods)}: "
+        f"{[(p.start_time, p.end_time) for p in standby_periods]}"
+    )
+    assert standby_periods[0].end_time == "00:00"
+    assert standby_periods[1].start_time == "00:00"

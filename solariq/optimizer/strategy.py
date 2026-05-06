@@ -71,8 +71,10 @@ def current_window_start(tz_name: str) -> tuple[int, datetime]:
 
 def build_strategy_periods(
     charge_mode_slots: list[bool],
+    standby_mode_slots: list[bool],
     battery_soc_forecast: list[float],
     agile_prices: list[float],
+    export_prices: list[float],
     config: SolarIQConfig,
     window_start: datetime | None = None,
 ) -> list[StrategyPeriod]:
@@ -97,14 +99,22 @@ def build_strategy_periods(
             return (window_start + timedelta(minutes=SLOTS * 30)).strftime("%H:%M")
         return "23:59"
 
-    # Build raw blocks: list of [start_slot, end_slot_exclusive, is_charge]
+    # Build raw blocks: list of [start_slot, end_slot_exclusive, mode_str]
+    def _slot_mode(t: int) -> str:
+        if charge_mode_slots[t]:
+            return "charge"
+        if standby_mode_slots[t]:
+            return "standby"
+        return "self_use"
+
     blocks: list[list] = []
-    current_mode = charge_mode_slots[0]
+    current_mode = _slot_mode(0)
     block_start = 0
     for t in range(1, SLOTS):
-        if charge_mode_slots[t] != current_mode:
+        m = _slot_mode(t)
+        if m != current_mode:
             blocks.append([block_start, t, current_mode])
-            current_mode = charge_mode_slots[t]
+            current_mode = m
             block_start = t
     blocks.append([block_start, SLOTS, current_mode])
 
@@ -130,11 +140,11 @@ def build_strategy_periods(
 
     def _build_periods_from_blocks(blocks_in: list[list]) -> list[StrategyPeriod]:
         periods_local: list[StrategyPeriod] = []
-        for num, (start, end, is_charge) in enumerate(blocks_in, start=1):
+        for num, (start, end, mode_str) in enumerate(blocks_in, start=1):
             start_time = _slot_time(start)
             end_time = _end_sentinel() if end == SLOTS else _slot_time(end)
 
-            if is_charge:
+            if mode_str == "charge":
                 end_soc_kwh = battery_soc_forecast[min(end - 1, SLOTS - 1)]
                 target_pct = _round_to_nearest_5(end_soc_kwh / config.battery.capacity_kwh * 100)
                 target_pct = max(DEFAULT_SELF_USE_MIN_SOC_PCT, min(100, target_pct))
@@ -148,6 +158,18 @@ def build_strategy_periods(
                         target_soc_pct=target_pct,
                         max_charge_w=int(config.battery.max_charge_kw * 1000),
                         avg_price_p=avg_price,
+                        is_default=False,
+                    )
+                )
+            elif mode_str == "standby":
+                avg_export = sum(export_prices[t] for t in range(start, end)) / (end - start)
+                periods_local.append(
+                    StrategyPeriod(
+                        period_num=num,
+                        start_time=start_time,
+                        end_time=end_time,
+                        mode="Battery Standby",
+                        avg_price_p=avg_export,
                         is_default=False,
                     )
                 )
@@ -167,26 +189,32 @@ def build_strategy_periods(
         return periods_local
 
     def _explicit_count(periods_in: list[StrategyPeriod]) -> int:
-        return sum(1 for p in periods_in if p.mode == "Charge" or (p.mode == "Self Use" and not p.is_default))
+        return sum(
+            1 for p in periods_in
+            if p.mode in ("Charge", "Battery Standby") or (p.mode == "Self Use" and not p.is_default)
+        )
 
-    # Keep only explicit periods within inverter limits by dropping smallest charge blocks first.
+    # Keep only explicit periods within inverter limits by dropping smallest standby then charge blocks.
     while True:
         periods = _build_periods_from_blocks(blocks)
         if _explicit_count(periods) <= MAX_PERIODS:
             return periods
 
-        charge_blocks = [(i, b) for i, b in enumerate(blocks) if b[2]]
-        if not charge_blocks:
-            # No charge blocks left to collapse; return best effort plan.
+        # Collapse smallest standby blocks first, then smallest charge blocks.
+        standby_blocks = [(i, b) for i, b in enumerate(blocks) if b[2] == "standby"]
+        charge_blocks = [(i, b) for i, b in enumerate(blocks) if b[2] == "charge"]
+
+        candidates = standby_blocks if standby_blocks else charge_blocks
+        if not candidates:
             return periods
 
-        smallest_idx, _ = min(charge_blocks, key=lambda x: x[1][1] - x[1][0])
+        smallest_idx, _ = min(candidates, key=lambda x: x[1][1] - x[1][0])
         blocks.pop(smallest_idx)
 
-        # Merge adjacent self-use blocks after removing a charge block.
+        # Merge adjacent self-use blocks after removing a block.
         merged: list[list] = []
         for block in blocks:
-            if merged and not merged[-1][2] and not block[2]:
+            if merged and merged[-1][2] == "self_use" and block[2] == "self_use":
                 merged[-1][1] = block[1]
             else:
                 merged.append(block)

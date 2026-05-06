@@ -131,3 +131,62 @@ def test_solver_reserves_soc_for_peak_window(config):
     )
     # Slot 31 ends at 16:00; it is the last slot before the peak window starts.
     assert result.battery_soc_forecast[31] >= required_soc - 0.05
+
+
+def test_solver_result_has_standby_mode_slots(config):
+    result = solve(
+        agile_prices=_flat(15.0),
+        export_prices=_flat(5.0),
+        solar=_flat(0.0),
+        load=_flat(0.3),
+        initial_soc_kwh=10.0,
+        config=config,
+        window_start=_WINDOW_START,
+    )
+    assert hasattr(result, "standby_mode_slots")
+    assert len(result.standby_mode_slots) == SLOTS
+    assert all(isinstance(v, bool) for v in result.standby_mode_slots)
+
+
+def test_solver_uses_standby_when_export_exceeds_storage_value(config):
+    """When the battery is full and export price is low (not worth discharging),
+    solar surplus exports directly and the optimizer produces standby slots
+    (battery idle, solar routes straight to grid)."""
+    window_start = datetime(2026, 1, 1, 8, 0, tzinfo=ZoneInfo("Europe/London"))
+
+    agile = [20.0] * SLOTS
+    # Low export price — discharging the battery to export is not economically
+    # worthwhile, so the MILP leaves the battery idle during solar surplus slots.
+    export = [2.0] * SLOTS
+
+    solar = [0.0] * SLOTS
+    for i in range(12):
+        solar[i] = 1.5       # 1.5 kWh/slot solar in morning
+
+    load = [0.3] * SLOTS
+
+    # Battery fully charged — no headroom to absorb solar surplus by charging
+    initial_soc_kwh = config.battery.capacity_kwh
+
+    result = solve(
+        agile_prices=agile,
+        export_prices=export,
+        solar=solar,
+        load=load,
+        initial_soc_kwh=initial_soc_kwh,
+        config=config,
+        window_start=window_start,
+    )
+
+    # Should have some standby slots during the solar morning period
+    morning_standby = sum(result.standby_mode_slots[:12])
+    assert morning_standby > 0, (
+        f"Expected standby slots in morning solar period. "
+        f"standby_mode_slots[:12]={result.standby_mode_slots[:12]}"
+    )
+
+    # During standby, SOC should stay approximately flat
+    for t in range(1, SLOTS):
+        if result.standby_mode_slots[t] and result.standby_mode_slots[t - 1]:
+            soc_delta = abs(result.battery_soc_forecast[t] - result.battery_soc_forecast[t - 1])
+            assert soc_delta < 0.1, f"SOC changed by {soc_delta:.3f} kWh during standby slot {t}"
