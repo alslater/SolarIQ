@@ -79,6 +79,8 @@ def history_tab() -> rx.Component:
                 _quick_btn("Day before yesterday", AppState.select_day_before_yesterday),
                 _quick_btn("This week", AppState.select_this_week),
                 _quick_btn("Last week", AppState.select_last_week),
+                _quick_btn("This month", AppState.select_this_month),
+                _quick_btn("Last month", AppState.select_last_month),
                 spacing="2",
                 margin_bottom="12px",
                 wrap="wrap",
@@ -141,6 +143,8 @@ def history_tab() -> rx.Component:
                     stat_card("Solar Saving", rx.text(AppState.history_solar_saving_str)),
                     stat_card("Battery Peak Saving", rx.text(AppState.history_battery_peak_saving_str)),
                     stat_card("Net Period Cost", rx.text(AppState.history_net_period_cost_str), "incl. standing charge"),
+                    stat_card("Avg Rate", rx.text(AppState.history_avg_rate_str), AppState.history_avg_export_rate_str),
+                    stat_card("Avg Paid Rate", rx.text(AppState.history_avg_paid_rate_str), "weighted by import kWh"),
                     spacing="3",
                     wrap="wrap",
                     margin_bottom="6",
@@ -193,13 +197,13 @@ def history_tab() -> rx.Component:
                     rx.hstack(
                         rx.text("Forecast Lines:", style={"font_size": "12px", "color": t.MUTED}),
                         rx.checkbox(
-                            checked=AppState.today_show_solcast_forecast,
-                            on_change=AppState.set_today_show_solcast_forecast,
+                            checked=AppState.history_show_solcast_forecast,
+                            on_change=AppState.set_history_show_solcast_forecast,
                         ),
                         rx.text("Solcast", style={"font_size": "12px", "color": t.FG}),
                         rx.checkbox(
-                            checked=AppState.today_show_forecast_solar_forecast,
-                            on_change=AppState.set_today_show_forecast_solar_forecast,
+                            checked=AppState.history_show_forecast_solar_forecast,
+                            on_change=AppState.set_history_show_forecast_solar_forecast,
                         ),
                         rx.text("forecast.solar", style={"font_size": "12px", "color": t.FG}),
                         spacing="2",
@@ -218,7 +222,7 @@ def history_tab() -> rx.Component:
                             radius=[2, 2, 0, 0],
                         ),
                         rx.cond(
-                            AppState.today_show_solcast_forecast,
+                            AppState.history_show_solcast_forecast,
                             rx.recharts.line(
                                 data_key="predicted_solar_solcast_kwh",
                                 name="Solcast Forecast",
@@ -230,7 +234,7 @@ def history_tab() -> rx.Component:
                             rx.fragment(),
                         ),
                         rx.cond(
-                            AppState.today_show_forecast_solar_forecast,
+                            AppState.history_show_forecast_solar_forecast,
                             rx.recharts.line(
                                 data_key="predicted_solar_forecast_solar_kwh",
                                 name="forecast.solar Forecast",

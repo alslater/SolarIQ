@@ -321,10 +321,20 @@ def get_historical_range_data(
     revenue_buckets: dict[tuple, float] = {}
     solar_saving_buckets: dict[tuple, float] = {}
     battery_peak_saving_buckets: dict[tuple, float] = {}
+    import_rate_sum_buckets: dict[tuple, float] = {}
+    import_rate_count_buckets: dict[tuple, int] = {}
+    export_rate_sum_buckets: dict[tuple, float] = {}
+    export_rate_count_buckets: dict[tuple, int] = {}
     for d, slot, import_kwh, export_kwh, solar_kwh, battery_power_kw in slot_entries:
         key = (d, slot // 2) if use_hourly else (d,)
         cost_buckets[key] = cost_buckets.get(key, 0.0) + import_kwh * import_rate_map.get((d, slot), 0.0)
         revenue_buckets[key] = revenue_buckets.get(key, 0.0) + export_kwh * export_rate_map.get((d, slot), 0.0)
+        if (d, slot) in import_rate_map:
+            import_rate_sum_buckets[key] = import_rate_sum_buckets.get(key, 0.0) + import_rate_map[(d, slot)]
+            import_rate_count_buckets[key] = import_rate_count_buckets.get(key, 0) + 1
+        if (d, slot) in export_rate_map:
+            export_rate_sum_buckets[key] = export_rate_sum_buckets.get(key, 0.0) + export_rate_map[(d, slot)]
+            export_rate_count_buckets[key] = export_rate_count_buckets.get(key, 0) + 1
         solar_saving_buckets[key] = solar_saving_buckets.get(key, 0.0) + solar_kwh * import_rate_map.get((d, slot), 0.0)
         local_hour = slot // 2
         if 16 <= local_hour <= 18:
@@ -395,6 +405,12 @@ def get_historical_range_data(
                     "grid_export_revenue_gbp": round(revenue_buckets.get(key, 0.0) / 100, prec),
                     "solar_saving_gbp": round(solar_saving_buckets.get(key, 0.0) / 100, prec),
                     "battery_peak_saving_gbp": round(battery_peak_saving_buckets.get(key, 0.0) / 100, prec),
+                    "avg_import_rate_p": round(
+                        import_rate_sum_buckets[key] / import_rate_count_buckets[key], prec
+                    ) if import_rate_count_buckets.get(key, 0) > 0 else None,
+                    "avg_export_rate_p": round(
+                        export_rate_sum_buckets[key] / export_rate_count_buckets[key], prec
+                    ) if export_rate_count_buckets.get(key, 0) > 0 else None,
                 })
         else:
             key = (cursor,)
@@ -418,6 +434,12 @@ def get_historical_range_data(
                 "grid_export_revenue_gbp": round(revenue_buckets.get(key, 0.0) / 100, prec),
                 "solar_saving_gbp": round(solar_saving_buckets.get(key, 0.0) / 100, prec),
                 "battery_peak_saving_gbp": round(battery_peak_saving_buckets.get(key, 0.0) / 100, prec),
+                "avg_import_rate_p": round(
+                    import_rate_sum_buckets[key] / import_rate_count_buckets[key], prec
+                ) if import_rate_count_buckets.get(key, 0) > 0 else None,
+                "avg_export_rate_p": round(
+                    export_rate_sum_buckets[key] / export_rate_count_buckets[key], prec
+                ) if export_rate_count_buckets.get(key, 0) > 0 else None,
             })
         cursor += timedelta(days=1)
 
