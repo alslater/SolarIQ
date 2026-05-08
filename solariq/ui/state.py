@@ -311,7 +311,6 @@ class AppState(AuthState):
         return [
             AppState.load_forecast_settings,
             AppState.load_cached_strategy,
-            AppState.refresh_today_data,
             AppState.load_cached_calibration,
         ]
 

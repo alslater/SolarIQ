@@ -223,7 +223,6 @@ def index() -> rx.Component:
                 ),
             ),
         ),
-        on_mount=AppState.on_load,
         style={"min_height": "100vh"},
     )
 
@@ -236,4 +235,4 @@ app = rx.App(
         rx.el.link(rel="icon", type="image/svg+xml", href="/favicon.svg"),
     ],
 )
-app.add_page(index, route="/", title="SolarIQ")
+app.add_page(index, route="/", title="SolarIQ", on_load=AppState.on_load)
