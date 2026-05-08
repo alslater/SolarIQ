@@ -192,6 +192,10 @@ async def _fetch_today_direct(
     )
 
 
+def _parse_localstorage_bool(raw: str) -> bool:
+    return str(raw).lower() in {"1", "true", "yes", "on"}
+
+
 class AppState(AuthState):
     # Navigation
     current_page: str = "today"
@@ -313,7 +317,7 @@ class AppState(AuthState):
 
     @rx.var
     def sidebar_collapsed(self) -> bool:
-        return str(self.sidebar_collapsed_raw).lower() in {"1", "true", "yes", "on"}
+        return _parse_localstorage_bool(self.sidebar_collapsed_raw)
 
     @rx.var
     def optimize_with_solcast(self) -> bool:
@@ -331,19 +335,19 @@ class AppState(AuthState):
 
     @rx.var
     def today_show_solcast_forecast(self) -> bool:
-        return str(self.today_show_solcast_forecast_raw).lower() in {"1", "true", "yes", "on"}
+        return _parse_localstorage_bool(self.today_show_solcast_forecast_raw)
 
     @rx.var
     def today_show_forecast_solar_forecast(self) -> bool:
-        return str(self.today_show_forecast_solar_forecast_raw).lower() in {"1", "true", "yes", "on"}
+        return _parse_localstorage_bool(self.today_show_forecast_solar_forecast_raw)
 
     @rx.var
     def history_show_solcast_forecast(self) -> bool:
-        return str(self.history_show_solcast_forecast_raw).lower() in {"1", "true", "yes", "on"}
+        return _parse_localstorage_bool(self.history_show_solcast_forecast_raw)
 
     @rx.var
     def history_show_forecast_solar_forecast(self) -> bool:
-        return str(self.history_show_forecast_solar_forecast_raw).lower() in {"1", "true", "yes", "on"}
+        return _parse_localstorage_bool(self.history_show_forecast_solar_forecast_raw)
 
     @rx.event
     def load_forecast_settings(self):
@@ -594,14 +598,14 @@ class AppState(AuthState):
 
     @rx.var
     def history_avg_rate_str(self) -> str:
-        rates = [r["avg_import_rate_p"] for r in self.history_chart_data if r.get("avg_import_rate_p", 0) > 0]
+        rates = [r["avg_import_rate_p"] for r in self.history_chart_data if r.get("avg_import_rate_p") is not None]
         if not rates:
             return "—"
         return f"{sum(rates) / len(rates):.2f}p"
 
     @rx.var
     def history_avg_export_rate_str(self) -> str:
-        rates = [r["avg_export_rate_p"] for r in self.history_chart_data if r.get("avg_export_rate_p", 0) > 0]
+        rates = [r["avg_export_rate_p"] for r in self.history_chart_data if r.get("avg_export_rate_p") is not None]
         if not rates:
             return "Export: —"
         return f"Export: {sum(rates) / len(rates):.2f}p"

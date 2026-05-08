@@ -406,13 +406,11 @@ def get_historical_range_data(
                     "solar_saving_gbp": round(solar_saving_buckets.get(key, 0.0) / 100, prec),
                     "battery_peak_saving_gbp": round(battery_peak_saving_buckets.get(key, 0.0) / 100, prec),
                     "avg_import_rate_p": round(
-                        import_rate_sum_buckets[key] / import_rate_count_buckets[key]
-                        if import_rate_count_buckets.get(key, 0) > 0 else 0.0, prec
-                    ),
+                        import_rate_sum_buckets[key] / import_rate_count_buckets[key], prec
+                    ) if import_rate_count_buckets.get(key, 0) > 0 else None,
                     "avg_export_rate_p": round(
-                        export_rate_sum_buckets[key] / export_rate_count_buckets[key]
-                        if export_rate_count_buckets.get(key, 0) > 0 else 0.0, prec
-                    ),
+                        export_rate_sum_buckets[key] / export_rate_count_buckets[key], prec
+                    ) if export_rate_count_buckets.get(key, 0) > 0 else None,
                 })
         else:
             key = (cursor,)
@@ -437,13 +435,11 @@ def get_historical_range_data(
                 "solar_saving_gbp": round(solar_saving_buckets.get(key, 0.0) / 100, prec),
                 "battery_peak_saving_gbp": round(battery_peak_saving_buckets.get(key, 0.0) / 100, prec),
                 "avg_import_rate_p": round(
-                    import_rate_sum_buckets[key] / import_rate_count_buckets[key]
-                    if import_rate_count_buckets.get(key, 0) > 0 else 0.0, prec
-                ),
+                    import_rate_sum_buckets[key] / import_rate_count_buckets[key], prec
+                ) if import_rate_count_buckets.get(key, 0) > 0 else None,
                 "avg_export_rate_p": round(
-                    export_rate_sum_buckets[key] / export_rate_count_buckets[key]
-                    if export_rate_count_buckets.get(key, 0) > 0 else 0.0, prec
-                ),
+                    export_rate_sum_buckets[key] / export_rate_count_buckets[key], prec
+                ) if export_rate_count_buckets.get(key, 0) > 0 else None,
             })
         cursor += timedelta(days=1)
 

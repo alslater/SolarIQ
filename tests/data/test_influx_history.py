@@ -125,6 +125,114 @@ def test_solar_saving_gbp_present_in_all_rows(config):
     assert all("solar_saving_gbp" in r for r in rows)
 
 
+def test_avg_rate_correct_for_two_slots(config):
+    """avg_import_rate_p and avg_export_rate_p are simple means across slots in the bucket."""
+    # UTC 11:00 and 11:30 on 2026-04-01 = BST 12:00 and 12:30 → same hourly bucket (12)
+    solax_points = [
+        _make_solax_point("2026-04-01", 11, 0, power_in=1.0),
+        _make_solax_point("2026-04-01", 11, 30, power_in=1.0),
+    ]
+    rate_points = [
+        _make_rate_point("2026-04-01", 11, 0, agile_rate=10.0, export_rate=4.0),
+        _make_rate_point("2026-04-01", 11, 30, agile_rate=30.0, export_rate=8.0),
+    ]
+
+    solax_mock = MagicMock()
+    solax_mock.query.return_value.get_points.return_value = solax_points
+    agile_mock = MagicMock()
+    agile_mock.query.return_value.get_points.return_value = rate_points
+    solcast_mock = MagicMock()
+    solcast_mock.query.return_value.get_points.return_value = []
+    forecast_solar_mock = MagicMock()
+    forecast_solar_mock.query.return_value.get_points.return_value = []
+
+    with patch(
+        "solariq.data.influx.InfluxDBClient",
+        side_effect=[solax_mock, agile_mock, solcast_mock, forecast_solar_mock],
+    ):
+        rows = get_historical_range_data(config, start_date=date(2026, 4, 1), end_date=date(2026, 4, 1))
+
+    bucket = next(r for r in rows if r.get("avg_import_rate_p") is not None)
+    assert bucket["avg_import_rate_p"] == pytest.approx(20.0, abs=0.001)
+    assert bucket["avg_export_rate_p"] == pytest.approx(6.0, abs=0.001)
+
+
+def test_avg_rate_none_when_no_rate_data(config):
+    """avg_import_rate_p and avg_export_rate_p are None when the rate query returns nothing."""
+    solax_points = [_make_solax_point("2026-04-01", 11, 0, power_in=1.0)]
+
+    solax_mock = MagicMock()
+    solax_mock.query.return_value.get_points.return_value = solax_points
+    agile_mock = MagicMock()
+    agile_mock.query.return_value.get_points.return_value = []
+    solcast_mock = MagicMock()
+    solcast_mock.query.return_value.get_points.return_value = []
+    forecast_solar_mock = MagicMock()
+    forecast_solar_mock.query.return_value.get_points.return_value = []
+
+    with patch(
+        "solariq.data.influx.InfluxDBClient",
+        side_effect=[solax_mock, agile_mock, solcast_mock, forecast_solar_mock],
+    ):
+        rows = get_historical_range_data(config, start_date=date(2026, 4, 1), end_date=date(2026, 4, 1))
+
+    assert all(r["avg_import_rate_p"] is None for r in rows)
+    assert all(r["avg_export_rate_p"] is None for r in rows)
+
+
+def test_avg_rate_includes_zero_and_negative_rates(config):
+    """Zero and negative Agile rates must be included in the average, not treated as missing."""
+    # Slots: -5p and 5p → average 0p (not dropped)
+    solax_points = [
+        _make_solax_point("2026-04-01", 11, 0, power_in=1.0),
+        _make_solax_point("2026-04-01", 11, 30, power_in=1.0),
+    ]
+    rate_points = [
+        _make_rate_point("2026-04-01", 11, 0, agile_rate=-5.0, export_rate=0.0),
+        _make_rate_point("2026-04-01", 11, 30, agile_rate=5.0, export_rate=0.0),
+    ]
+
+    solax_mock = MagicMock()
+    solax_mock.query.return_value.get_points.return_value = solax_points
+    agile_mock = MagicMock()
+    agile_mock.query.return_value.get_points.return_value = rate_points
+    solcast_mock = MagicMock()
+    solcast_mock.query.return_value.get_points.return_value = []
+    forecast_solar_mock = MagicMock()
+    forecast_solar_mock.query.return_value.get_points.return_value = []
+
+    with patch(
+        "solariq.data.influx.InfluxDBClient",
+        side_effect=[solax_mock, agile_mock, solcast_mock, forecast_solar_mock],
+    ):
+        rows = get_historical_range_data(config, start_date=date(2026, 4, 1), end_date=date(2026, 4, 1))
+
+    bucket = next(r for r in rows if r.get("avg_import_rate_p") is not None)
+    assert bucket["avg_import_rate_p"] == pytest.approx(0.0, abs=0.001)
+    assert bucket["avg_export_rate_p"] == pytest.approx(0.0, abs=0.001)
+
+
+def test_avg_rate_present_in_all_rows(config):
+    """Every row contains avg_import_rate_p and avg_export_rate_p keys (value may be None)."""
+    solax_mock = MagicMock()
+    solax_mock.query.return_value.get_points.return_value = []
+    agile_mock = MagicMock()
+    agile_mock.query.return_value.get_points.return_value = []
+    solcast_mock = MagicMock()
+    solcast_mock.query.return_value.get_points.return_value = []
+    forecast_solar_mock = MagicMock()
+    forecast_solar_mock.query.return_value.get_points.return_value = []
+
+    with patch(
+        "solariq.data.influx.InfluxDBClient",
+        side_effect=[solax_mock, agile_mock, solcast_mock, forecast_solar_mock],
+    ):
+        rows = get_historical_range_data(config, start_date=date(2026, 4, 1), end_date=date(2026, 4, 3))
+
+    assert all("avg_import_rate_p" in r for r in rows)
+    assert all("avg_export_rate_p" in r for r in rows)
+
+
 def test_predicted_solar_kwh_in_rows(config):
     """predicted_solar_kwh from solar_forecast is aggregated into output rows."""
     solax_mock = MagicMock()
