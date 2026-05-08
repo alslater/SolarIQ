@@ -195,7 +195,10 @@ async def _fetch_today_direct(
 class AppState(AuthState):
     # Navigation
     current_page: str = "today"
-    sidebar_collapsed: bool = False
+    sidebar_collapsed_raw: str = rx.LocalStorage(
+        "0",
+        name="solariq_sidebar_collapsed",
+    )
 
     # Tomorrow strategy
     strategy_periods: list[dict] = []
@@ -220,13 +223,21 @@ class AppState(AuthState):
     collect_solcast_enabled: bool = True
     collect_forecast_solar_enabled: bool = False
     optimization_forecast_source: str = OPTIMIZATION_SOURCE_SOLCAST
-    _today_show_solcast_forecast: str = rx.LocalStorage(
+    today_show_solcast_forecast_raw: str = rx.LocalStorage(
         "1",
         name="solariq_today_show_solcast_forecast",
     )
-    _today_show_forecast_solar_forecast: str = rx.LocalStorage(
+    today_show_forecast_solar_forecast_raw: str = rx.LocalStorage(
         "0",
         name="solariq_today_show_forecast_solar_forecast",
+    )
+    history_show_solcast_forecast_raw: str = rx.LocalStorage(
+        "1",
+        name="solariq_history_show_solcast_forecast",
+    )
+    history_show_forecast_solar_forecast_raw: str = rx.LocalStorage(
+        "0",
+        name="solariq_history_show_forecast_solar_forecast",
     )
 
     # Today data
@@ -301,6 +312,10 @@ class AppState(AuthState):
         ]
 
     @rx.var
+    def sidebar_collapsed(self) -> bool:
+        return str(self.sidebar_collapsed_raw).lower() in {"1", "true", "yes", "on"}
+
+    @rx.var
     def optimize_with_solcast(self) -> bool:
         return self.optimization_forecast_source == OPTIMIZATION_SOURCE_SOLCAST
 
@@ -316,11 +331,19 @@ class AppState(AuthState):
 
     @rx.var
     def today_show_solcast_forecast(self) -> bool:
-        return str(self._today_show_solcast_forecast).lower() in {"1", "true", "yes", "on"}
+        return str(self.today_show_solcast_forecast_raw).lower() in {"1", "true", "yes", "on"}
 
     @rx.var
     def today_show_forecast_solar_forecast(self) -> bool:
-        return str(self._today_show_forecast_solar_forecast).lower() in {"1", "true", "yes", "on"}
+        return str(self.today_show_forecast_solar_forecast_raw).lower() in {"1", "true", "yes", "on"}
+
+    @rx.var
+    def history_show_solcast_forecast(self) -> bool:
+        return str(self.history_show_solcast_forecast_raw).lower() in {"1", "true", "yes", "on"}
+
+    @rx.var
+    def history_show_forecast_solar_forecast(self) -> bool:
+        return str(self.history_show_forecast_solar_forecast_raw).lower() in {"1", "true", "yes", "on"}
 
     @rx.event
     def load_forecast_settings(self):
@@ -374,11 +397,19 @@ class AppState(AuthState):
 
     @rx.event
     def set_today_show_solcast_forecast(self, enabled: bool):
-        self._today_show_solcast_forecast = "1" if bool(enabled) else "0"
+        self.today_show_solcast_forecast_raw = "1" if bool(enabled) else "0"
 
     @rx.event
     def set_today_show_forecast_solar_forecast(self, enabled: bool):
-        self._today_show_forecast_solar_forecast = "1" if bool(enabled) else "0"
+        self.today_show_forecast_solar_forecast_raw = "1" if bool(enabled) else "0"
+
+    @rx.event
+    def set_history_show_solcast_forecast(self, enabled: bool):
+        self.history_show_solcast_forecast_raw = "1" if bool(enabled) else "0"
+
+    @rx.event
+    def set_history_show_forecast_solar_forecast(self, enabled: bool):
+        self.history_show_forecast_solar_forecast_raw = "1" if bool(enabled) else "0"
 
     @rx.event
     def login(self):
@@ -562,6 +593,28 @@ class AppState(AuthState):
         return f"£{self.history_net_period_cost_gbp:.2f}"
 
     @rx.var
+    def history_avg_rate_str(self) -> str:
+        rates = [r["avg_import_rate_p"] for r in self.history_chart_data if r.get("avg_import_rate_p", 0) > 0]
+        if not rates:
+            return "—"
+        return f"{sum(rates) / len(rates):.2f}p"
+
+    @rx.var
+    def history_avg_export_rate_str(self) -> str:
+        rates = [r["avg_export_rate_p"] for r in self.history_chart_data if r.get("avg_export_rate_p", 0) > 0]
+        if not rates:
+            return "Export: —"
+        return f"Export: {sum(rates) / len(rates):.2f}p"
+
+    @rx.var
+    def history_avg_paid_rate_str(self) -> str:
+        total_kwh = sum(r.get("grid_import_kwh") or 0.0 for r in self.history_chart_data)
+        total_cost_gbp = sum(r.get("grid_cost_gbp") or 0.0 for r in self.history_chart_data)
+        if total_kwh <= 0:
+            return "—"
+        return f"{total_cost_gbp * 100 / total_kwh:.2f}p"
+
+    @rx.var
     def calibration_label(self) -> str:
         """Subtitle for export stat cards: '×1.092 calibrated' or 'uncalibrated'."""
         if not self.calibration_computed_at:
@@ -608,7 +661,7 @@ class AppState(AuthState):
 
     @rx.event
     def toggle_sidebar(self):
-        self.sidebar_collapsed = not self.sidebar_collapsed
+        self.sidebar_collapsed_raw = "0" if self.sidebar_collapsed else "1"
 
     @rx.event
     def set_history_start(self, value: str):
@@ -655,6 +708,26 @@ class AppState(AuthState):
         last_sunday = last_monday + timedelta(days=6)
         self.history_start_date = last_monday.isoformat()
         self.history_end_date = last_sunday.isoformat()
+        return AppState.load_history
+
+    @rx.event
+    def select_this_month(self):
+        config = _get_config()
+        tz = ZoneInfo(config.app.timezone)
+        today = datetime.now(tz).date()
+        self.history_start_date = today.replace(day=1).isoformat()
+        self.history_end_date = today.isoformat()
+        return AppState.load_history
+
+    @rx.event
+    def select_last_month(self):
+        config = _get_config()
+        tz = ZoneInfo(config.app.timezone)
+        today = datetime.now(tz).date()
+        first_of_this_month = today.replace(day=1)
+        last_day_of_last_month = first_of_this_month - timedelta(days=1)
+        self.history_start_date = last_day_of_last_month.replace(day=1).isoformat()
+        self.history_end_date = last_day_of_last_month.isoformat()
         return AppState.load_history
 
     @rx.event(background=True)
