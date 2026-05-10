@@ -58,6 +58,64 @@ The UI is available at `http://localhost:3002`. The first start compiles the Nex
 uv run pytest
 ```
 
+## Scripts
+
+Utility scripts for data management and analysis. All are run as Python modules so that the `solariq` package is on the path.
+
+### Forecast accuracy comparison
+
+Compare Solcast and forecast.solar PV forecasts against actual inverter generation to see which has been more accurate.
+
+```bash
+# Last 7 days (default)
+uv run python -m solariq.scripts.compare_forecasts
+
+# Last 30 days
+uv run python -m solariq.scripts.compare_forecasts --days 30
+
+# Explicit date range
+uv run python -m solariq.scripts.compare_forecasts --start 2026-04-01 --end 2026-04-30
+
+# Include per-slot (30-minute) breakdown for each day
+uv run python -m solariq.scripts.compare_forecasts --days 7 --detail
+
+# Export to Excel (Summary and Detail worksheets)
+uv run python -m solariq.scripts.compare_forecasts --days 30 --excel report.xlsx
+
+# Excel only, no terminal output
+uv run python -m solariq.scripts.compare_forecasts --days 30 --excel report.xlsx --quiet
+```
+
+The summary table shows total kWh, MAE, and RMSE for each source per day, with a per-day winner column and an overall winner at the bottom. Days where either forecast or actual inverter data is missing are skipped with a warning.
+
+### Re-acquire solar forecast
+
+Re-fetch today's forecast from Solcast or forecast.solar and overwrite what is stored in InfluxDB. Useful if the scheduled fetch failed or you want to backfill a past date.
+
+```bash
+# Re-fetch all enabled sources for today
+uv run python -m solariq.scripts.reacquire_forecast
+
+# Re-fetch a specific source
+uv run python -m solariq.scripts.reacquire_forecast --source solcast
+uv run python -m solariq.scripts.reacquire_forecast --source forecast_solar
+
+# Backfill a past date
+uv run python -m solariq.scripts.reacquire_forecast --date 2026-05-04
+```
+
+### Seed Solcast data
+
+Import Solcast forecast data from a JSON file into InfluxDB. Useful for loading historical forecast data.
+
+```bash
+uv run python -m solariq.scripts.seed_solcast forecast.json
+# or from stdin
+cat forecast.json | uv run python -m solariq.scripts.seed_solcast
+```
+
+JSON format: `{"date": "YYYY-MM-DD", "slots": [48 floats in kWh]}`
+
 ## Docker deployment
 
 The application is split into two containers defined in `docker-compose.yaml`:
