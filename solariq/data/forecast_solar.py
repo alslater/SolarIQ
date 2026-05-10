@@ -160,7 +160,7 @@ def fetch_forecast_solar_with_coverage(
         if 30 in parsed_minutes:
             period_minutes = 30
 
-    slots_per_period = period_minutes // 30  # 1 or 2
+    slots_per_period = period_minutes // 30  # 1 (30m), 2 (60m), or 4 (120m)
 
     prev_value: float | None = None
     for end_dt, numeric in parsed_points:

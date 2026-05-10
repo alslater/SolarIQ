@@ -316,7 +316,7 @@ def get_historical_range_data(
     )
 
     # Aggregate slot-sized buckets; also accumulate raw slot data for cost calculation
-    # Bucket key: (date, hour) for hourly, (date,) for daily
+    # Bucket key: (date, slot) for 30-minute buckets, (date,) for daily
     energy_buckets: dict[tuple, dict] = {}
     # slot_entries: list of (date, slot_index, import_kwh, export_kwh) for cost join
     slot_entries: list[tuple] = []

@@ -49,12 +49,12 @@ def compute_daily_accuracy(config: SolarIQConfig, target: date) -> "DayAccuracy 
         return None
 
     solcast = load_solar_forecast_influx(config, target, source="solcast")
-    if solcast is None or all(v == 0.0 for v in solcast):
+    if solcast is None:
         logger.warning("no Solcast forecast for %s, skipping", target)
         return None
 
     fs = load_solar_forecast_influx(config, target, source="forecast_solar")
-    if fs is None or all(v == 0.0 for v in fs):
+    if fs is None:
         logger.warning("no forecast.solar forecast for %s, skipping", target)
         return None
 
