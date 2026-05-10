@@ -1189,11 +1189,11 @@ class AppState(AuthState):
     @rx.event
     def validate_evaluation_period_time(self, index: int, field: str, value: str):
         """Called on blur — validates that a time field is a valid 30-min boundary."""
-        from solariq.optimizer.simulator import _is_slot_boundary
+        from solariq.optimizer.simulator import is_slot_boundary
         errors = list(self.evaluation_period_errors)
         while len(errors) <= index:
             errors.append({"start_time": "", "end_time": ""})
-        if value and not _is_slot_boundary(value):
+        if value and not is_slot_boundary(value):
             errors[index] = {**errors[index], field: f"{value!r} must be HH:00 or HH:30"}
         else:
             errors[index] = {**errors[index], field: ""}

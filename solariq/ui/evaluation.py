@@ -132,6 +132,7 @@ def _period_row(period: dict, index: int) -> rx.Component:
             rx.button(
                 "✕",
                 on_click=AppState.remove_evaluation_period(index),
+                aria_label="Remove period",
                 style={
                     "background": "transparent",
                     "color": t.FAIL,

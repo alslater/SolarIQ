@@ -2,7 +2,7 @@
 import pytest
 from solariq.config import load_config
 from solariq.optimizer.simulator import simulate, validate_periods
-from solariq.optimizer.types import UserPeriod, EvaluationResult
+from solariq.optimizer.types import UserPeriod
 
 SLOTS = 48
 
@@ -252,6 +252,21 @@ def test_simulate_copies_forecast_arrays_to_result(config):
     assert result.solar_forecast == forecast.solar_forecast
 
 
+def test_simulate_charge_respects_battery_physical_limit(config):
+    """max_charge_kw on a Charge period is user intent, but simulate() must not exceed
+    battery.max_charge_kwh_per_slot regardless of what validate_periods was called with.
+    """
+    battery = config.battery  # max_charge_kwh_per_slot = 3.6 / 2 = 1.8 kWh
+    # Set max_charge_kw far above battery physical limit; skip battery= in validate so
+    # validate_periods does NOT catch it — simulate() must still clamp.
+    oversized_kw = battery.max_charge_kw * 10
+    periods = [UserPeriod("00:00", "24:00", "Charge", target_soc_pct=100, max_charge_kw=oversized_kw)]
+    forecast = _make_forecast(solar=0.0, load=0.0, initial_soc_kwh=0.0)
+    result = simulate(periods, forecast, battery)
+    max_imported_per_slot = max(result.grid_import_forecast)
+    assert max_imported_per_slot <= battery.max_charge_kwh_per_slot + 1e-9
+
+
 def test_simulate_charge_mode_exports_excess_solar(config):
     """During a Charge period, solar exceeding load + charge target should be exported."""
     # Battery already at target, solar > load — surplus should be exported not dropped
@@ -337,6 +352,16 @@ def test_validate_rejects_malformed_time():
     periods = [UserPeriod("00:00", "16::00", "Self Use")]
     error = validate_periods(periods)
     assert error is not None
+
+
+def test_validate_rejects_out_of_range_minutes():
+    """'23:60' has minutes >= 60 — _time_to_slot would map it to slot 48 (24:00),
+    silently treating a malformed time as end-of-day.
+    """
+    periods = [UserPeriod("00:00", "23:60", "Self Use")]
+    error = validate_periods(periods)
+    assert error is not None
+    assert "23:60" in error
 
 
 def test_validate_rejects_non_half_hour_boundary():

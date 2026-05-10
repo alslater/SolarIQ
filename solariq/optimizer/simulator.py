@@ -20,7 +20,7 @@ def _slot_to_time(slot: int) -> str:
     return f"{h:02d}:{m:02d}"
 
 
-def _is_slot_boundary(t: str) -> bool:
+def is_slot_boundary(t: str) -> bool:
     """Return True if t falls exactly on a 30-minute slot boundary.
 
     The simulation models 48 half-hour slots. Times between boundaries (e.g. 21:45)
@@ -29,11 +29,13 @@ def _is_slot_boundary(t: str) -> bool:
     """
     if t == "24:00":
         return True
+    if not isinstance(t, str) or t.count(":") != 1:
+        return False
     try:
         h, m = map(int, t.split(":"))
-    except (ValueError, AttributeError):
+    except ValueError:
         return False
-    return 0 <= h <= 23 and m % 30 == 0
+    return 0 <= h <= 23 and 0 <= m < 60 and m % 30 == 0
 
 
 def validate_periods(periods: list[UserPeriod], start_slot: int = 0, battery=None) -> str | None:
@@ -52,9 +54,9 @@ def validate_periods(periods: list[UserPeriod], start_slot: int = 0, battery=Non
         return "Maximum 10 periods allowed (inverter limit)."
 
     for p in periods:
-        if not _is_slot_boundary(p.start_time):
+        if not is_slot_boundary(p.start_time):
             return f"Start time {p.start_time!r} must be on a 30-minute boundary (HH:00 or HH:30) — the simulation models 48 half-hour slots."
-        if not _is_slot_boundary(p.end_time):
+        if not is_slot_boundary(p.end_time):
             return f"End time {p.end_time!r} must be on a 30-minute boundary (HH:00 or HH:30) — the simulation models 48 half-hour slots."
 
     for p in periods:
@@ -147,7 +149,7 @@ def simulate(periods: list[UserPeriod], forecast, battery, start_slot: int = 0) 
         load = forecast.load_forecast[t]
         target_soc_kwh = capacity_kwh * p.target_soc_pct / 100 if p.mode == "Charge" else 0.0
         p_min_soc_kwh = capacity_kwh * p.min_soc_pct / 100 if p.mode == "Self Use" else min_soc_kwh
-        max_charge_slot = (p.max_charge_kw / 2) if p.mode == "Charge" else battery.max_charge_kwh_per_slot
+        max_charge_slot = min(p.max_charge_kw / 2, battery.max_charge_kwh_per_slot) if p.mode == "Charge" else battery.max_charge_kwh_per_slot
 
         if p.mode == "Charge":
             charge_mode_slots[t] = True
