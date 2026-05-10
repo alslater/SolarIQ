@@ -101,6 +101,64 @@ def test_validate_rejects_incomplete_coverage():
     assert "24:00" in error or "cover" in error.lower()
 
 
+def test_validate_rejects_zero_max_charge_kw():
+    periods = [UserPeriod("00:00", "24:00", "Charge", max_charge_kw=0.0)]
+    error = validate_periods(periods)
+    assert error is not None
+    assert "max_charge_kw" in error
+
+
+def test_validate_rejects_negative_max_charge_kw():
+    periods = [UserPeriod("00:00", "24:00", "Charge", max_charge_kw=-1.0)]
+    error = validate_periods(periods)
+    assert error is not None
+    assert "max_charge_kw" in error
+
+
+def test_validate_rejects_max_charge_kw_exceeds_battery(config):
+    periods = [UserPeriod("00:00", "24:00", "Charge", max_charge_kw=config.battery.max_charge_kw + 1.0)]
+    error = validate_periods(periods, battery=config.battery)
+    assert error is not None
+    assert "exceeds" in error
+
+
+def test_validate_accepts_max_charge_kw_at_battery_limit(config):
+    periods = [UserPeriod("00:00", "24:00", "Charge", max_charge_kw=config.battery.max_charge_kw)]
+    assert validate_periods(periods, battery=config.battery) is None
+
+
+def test_validate_rejects_target_soc_below_battery_min(config):
+    below_min = config.battery.min_soc_pct - 1
+    periods = [UserPeriod("00:00", "24:00", "Charge", target_soc_pct=below_min)]
+    error = validate_periods(periods, battery=config.battery)
+    assert error is not None
+    assert "minimum" in error
+
+
+def test_validate_accepts_target_soc_at_battery_min(config):
+    periods = [UserPeriod("00:00", "24:00", "Charge", target_soc_pct=config.battery.min_soc_pct)]
+    assert validate_periods(periods, battery=config.battery) is None
+
+
+def test_validate_battery_checks_skipped_without_battery():
+    """Battery-aware checks must not run when battery is not passed."""
+    # max_charge_kw > any real battery max — would fail if battery were passed
+    periods = [UserPeriod("00:00", "24:00", "Charge", max_charge_kw=999.0, target_soc_pct=0)]
+    assert validate_periods(periods) is None
+
+
+def test_simulate_raises_if_periods_do_not_cover_window(config):
+    """simulate() must raise ValueError if periods leave a gap, rather than producing
+    a silent IndexError or misaligned results — defensive check for direct callers
+    that skip validate_periods().
+    """
+    # Period only covers half the day — gap from 12:00 to 24:00
+    periods = [UserPeriod("00:00", "12:00", "Self Use")]
+    forecast = _make_forecast()
+    with pytest.raises(ValueError, match="validate_periods"):
+        simulate(periods, forecast, config.battery)
+
+
 # --- simulate tests ---
 
 def test_simulate_returns_48_slots(config):
@@ -270,16 +328,31 @@ def test_simulate_start_slot_cost_covers_only_simulated_slots(config):
 
 # --- Integration: today-mode data flow ---
 
-def test_validate_raises_on_malformed_time():
-    """Malformed time strings (e.g. '16::00') should raise, not silently return None.
+def test_validate_rejects_malformed_time():
+    """Malformed time strings (e.g. '16::00') should return an error, not silently pass.
 
-    evaluate_schedule wraps validate_periods in a try/except so the spinner is
-    cleared correctly — this test ensures the exception is actually raised so that
-    path is exercised.
+    evaluate_schedule wraps validate_periods in a try/except for genuine parse errors,
+    but validate_periods now catches bad boundaries itself and returns a string error.
     """
     periods = [UserPeriod("00:00", "16::00", "Self Use")]
-    with pytest.raises(Exception):
-        validate_periods(periods)
+    error = validate_periods(periods)
+    assert error is not None
+
+
+def test_validate_rejects_non_half_hour_boundary():
+    """Times that don't fall on a half-hour boundary (e.g. '21:45') must be rejected.
+
+    _time_to_slot() truncates minutes to the nearest half-hour, so '21:45' silently
+    becomes slot 43 (21:30). Without this check a period split at '21:45' would be
+    accepted but the 15-minute partial slot would be silently ignored.
+    """
+    periods = [
+        UserPeriod("00:00", "21:45", "Self Use"),
+        UserPeriod("21:45", "24:00", "Charge"),
+    ]
+    error = validate_periods(periods)
+    assert error is not None
+    assert "21:45" in error
 
 
 def test_simulate_stitched_today_forecast(config):
@@ -340,15 +413,17 @@ def test_simulate_short_snapshot_arrays_padded(config):
 
     current_slot = 16  # 08:00 — only 16 actual slots available
     raw_actual_solar = [0.1] * current_slot   # snapshot only has 16 entries
-    raw_predicted_usage = [0.3] * current_slot  # likewise
+    raw_actual_usage = [0.4] * current_slot   # likewise — deliberately different from predicted
+    raw_predicted_usage = [0.3] * current_slot
 
     # Normalise exactly as evaluate_schedule does
     actual_solar = (raw_actual_solar + [0.0] * SLOTS)[:SLOTS]
+    actual_usage = (raw_actual_usage + [0.0] * SLOTS)[:SLOTS]
     predicted_usage = (raw_predicted_usage + [0.3] * SLOTS)[:SLOTS]
     solar_forecast_today = [0.5] * SLOTS
 
     solar_48 = actual_solar[:current_slot] + solar_forecast_today[current_slot:]
-    load_48 = actual_solar[:current_slot] + predicted_usage[current_slot:]  # actuals for past, predicted for future
+    load_48 = actual_usage[:current_slot] + predicted_usage[current_slot:]  # actuals for past, predicted for future
     soc_48 = [0.0] * SLOTS
     soc_48[current_slot] = 6.0
 

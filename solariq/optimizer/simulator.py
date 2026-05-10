@@ -20,8 +20,29 @@ def _slot_to_time(slot: int) -> str:
     return f"{h:02d}:{m:02d}"
 
 
-def validate_periods(periods: list[UserPeriod], start_slot: int = 0) -> str | None:
-    """Return an error string if periods are invalid, None if valid."""
+def _is_slot_boundary(t: str) -> bool:
+    """Return True if t falls exactly on a 30-minute slot boundary.
+
+    The simulation models 48 half-hour slots. Times between boundaries (e.g. 21:45)
+    cannot be represented — _time_to_slot would silently truncate them, producing
+    wrong results without any error.
+    """
+    if t == "24:00":
+        return True
+    try:
+        h, m = map(int, t.split(":"))
+    except (ValueError, AttributeError):
+        return False
+    return 0 <= h <= 23 and m % 30 == 0
+
+
+def validate_periods(periods: list[UserPeriod], start_slot: int = 0, battery=None) -> str | None:
+    """Return an error string if periods are invalid, None if valid.
+
+    Pass `battery` (a BatteryConfig) to enable battery-aware checks:
+    - max_charge_kw must be > 0 and <= battery.max_charge_kw
+    - target_soc_pct (Charge mode) must be >= battery.min_soc_pct
+    """
     if not periods:
         return "At least one period is required."
 
@@ -31,14 +52,33 @@ def validate_periods(periods: list[UserPeriod], start_slot: int = 0) -> str | No
         return "Maximum 10 periods allowed (inverter limit)."
 
     for p in periods:
+        if not _is_slot_boundary(p.start_time):
+            return f"Start time {p.start_time!r} must be on a 30-minute boundary (HH:00 or HH:30) — the simulation models 48 half-hour slots."
+        if not _is_slot_boundary(p.end_time):
+            return f"End time {p.end_time!r} must be on a 30-minute boundary (HH:00 or HH:30) — the simulation models 48 half-hour slots."
+
+    for p in periods:
         start = _time_to_slot(p.start_time)
         end = _time_to_slot(p.end_time)
         if start >= end:
             return f"Period start ({p.start_time}) must be before end ({p.end_time})."
 
     for p in periods:
-        if p.mode == "Charge" and not (0 <= p.target_soc_pct <= 100):
-            return f"target_soc_pct must be 0–100 (got {p.target_soc_pct})."
+        if p.mode == "Charge":
+            if not (0 <= p.target_soc_pct <= 100):
+                return f"target_soc_pct must be 0–100 (got {p.target_soc_pct})."
+            if battery is not None and p.target_soc_pct < battery.min_soc_pct:
+                return (
+                    f"target_soc_pct ({p.target_soc_pct}%) is below the battery minimum "
+                    f"({battery.min_soc_pct}%)."
+                )
+            if p.max_charge_kw <= 0:
+                return f"max_charge_kw must be greater than 0 (got {p.max_charge_kw})."
+            if battery is not None and p.max_charge_kw > battery.max_charge_kw:
+                return (
+                    f"max_charge_kw ({p.max_charge_kw} kW) exceeds the battery maximum "
+                    f"({battery.max_charge_kw} kW)."
+                )
         if p.mode == "Self Use" and not (0 <= p.min_soc_pct <= 100):
             return f"min_soc_pct must be 0–100 (got {p.min_soc_pct})."
 
@@ -73,14 +113,23 @@ def simulate(periods: list[UserPeriod], forecast, battery, start_slot: int = 0) 
     `battery` must have attributes:
         capacity_kwh, min_soc_kwh, max_charge_kwh_per_slot
     """
-    # Build slot → period mapping
+    # Build a 48-entry slot → period mapping indexed by absolute slot number.
+    # Slots before start_slot are left as None (not simulated).
     sorted_periods = sorted(periods, key=lambda p: _time_to_slot(p.start_time))
-    slot_period: list[UserPeriod] = []
+    slot_period: list[UserPeriod | None] = [None] * SLOTS
     for p in sorted_periods:
         start = _time_to_slot(p.start_time)
         end = _time_to_slot(p.end_time)
-        for _ in range(start, end):
-            slot_period.append(p)
+        for s in range(start, end):
+            slot_period[s] = p
+
+    simulated_slots = [t for t in range(start_slot, SLOTS) if slot_period[t] is not None]
+    if len(simulated_slots) != SLOTS - start_slot:
+        raise ValueError(
+            f"Periods do not cover all slots from {_slot_to_time(start_slot)} to 24:00 "
+            f"({len(simulated_slots)} of {SLOTS - start_slot} slots mapped). "
+            "Call validate_periods() before simulate()."
+        )
 
     capacity_kwh = battery.capacity_kwh
     min_soc_kwh = battery.min_soc_kwh
@@ -93,7 +142,7 @@ def simulate(periods: list[UserPeriod], forecast, battery, start_slot: int = 0) 
     soc = forecast.battery_soc_forecast[start_slot]  # initial SOC at start_slot
 
     for t in range(start_slot, SLOTS):
-        p = slot_period[t - start_slot]
+        p = slot_period[t]
         solar = forecast.solar_forecast[t]
         load = forecast.load_forecast[t]
         target_soc_kwh = capacity_kwh * p.target_soc_pct / 100 if p.mode == "Charge" else 0.0

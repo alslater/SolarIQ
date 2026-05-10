@@ -233,6 +233,7 @@ class AppState(AuthState):
 
     # Evaluation page
     evaluation_periods: list[dict] = []
+    evaluation_period_errors: list[dict] = []  # per-period {field: error_message}
     evaluation_loading: bool = False
     evaluation_error: str = ""
     evaluation_has_result: bool = False
@@ -241,6 +242,7 @@ class AppState(AuthState):
     evaluation_grid_import_kwh: float = 0.0
     evaluation_price_data: list[dict] = []
     evaluation_solar_data: list[dict] = []
+    evaluation_reference_price_data: list[dict] = []  # raw import/export rates for the pre-simulate chart
     evaluation_today_mode: bool = False
     evaluation_current_slot: int = 0
     evaluation_current_slot_time: str = ""
@@ -1080,8 +1082,27 @@ class AppState(AuthState):
         return _get_config().app.test_strategy_mode
 
     @rx.var
+    def evaluation_can_add_period(self) -> bool:
+        if not self.evaluation_periods:
+            return True
+        if self.evaluation_periods[-1].get("end_time") == "24:00":
+            return False
+        # Also block if the last period has a time validation error
+        if self.evaluation_period_errors:
+            last_errors = self.evaluation_period_errors[-1] if len(self.evaluation_period_errors) >= len(self.evaluation_periods) else {}
+            if last_errors.get("end_time"):
+                return False
+        return True
+
+    @rx.var
     def evaluation_agile_chart_data(self) -> list[dict]:
-        """Agile import and export prices for the reference chart above the schedule editor."""
+        """Agile import and export prices for the reference chart above the schedule editor.
+
+        Populated from evaluation_reference_price_data (written by evaluate_schedule), falling
+        back to today_price_data / tomorrow_price_data when available (e.g. Today tab visited).
+        """
+        if self.evaluation_reference_price_data:
+            return self.evaluation_reference_price_data
         if self.evaluation_today_mode:
             return [
                 {"time": row["time"], "import": row.get("import", 0.0), "export": row.get("export", 0.0)}
@@ -1140,6 +1161,7 @@ class AppState(AuthState):
                 "max_charge_kw": 3.6,
                 "min_soc_pct": 10,
             }]
+            self.evaluation_period_errors = [{}]
         else:
             last = self.evaluation_periods[-1]
             self.evaluation_periods = self.evaluation_periods + [{
@@ -1150,17 +1172,40 @@ class AppState(AuthState):
                 "max_charge_kw": 3.6,
                 "min_soc_pct": 10,
             }]
+            self.evaluation_period_errors = self.evaluation_period_errors + [{}]
 
     @rx.event
     def update_evaluation_period(self, index: int, field: str, value):
         updated = list(self.evaluation_periods)
         updated[index] = {**updated[index], field: value}
         self.evaluation_periods = updated
+        # Clear the error for this field as the user is typing
+        errors = list(self.evaluation_period_errors)
+        while len(errors) <= index:
+            errors.append({})
+        errors[index] = {**errors[index], field: ""}
+        self.evaluation_period_errors = errors
+
+    @rx.event
+    def validate_evaluation_period_time(self, index: int, field: str, value: str):
+        """Called on blur — validates that a time field is a valid 30-min boundary."""
+        from solariq.optimizer.simulator import _is_slot_boundary
+        errors = list(self.evaluation_period_errors)
+        while len(errors) <= index:
+            errors.append({})
+        if value and not _is_slot_boundary(value):
+            errors[index] = {**errors[index], field: f"{value!r} must be HH:00 or HH:30"}
+        else:
+            errors[index] = {**errors[index], field: ""}
+        self.evaluation_period_errors = errors
 
     @rx.event
     def remove_evaluation_period(self, index: int):
         self.evaluation_periods = [
             p for i, p in enumerate(self.evaluation_periods) if i != index
+        ]
+        self.evaluation_period_errors = [
+            e for i, e in enumerate(self.evaluation_period_errors) if i != index
         ]
 
     @rx.event
@@ -1169,6 +1214,8 @@ class AppState(AuthState):
         self.evaluation_today_mode = not self.evaluation_today_mode
         self.evaluation_has_result = False
         self.evaluation_error = ""
+        self.evaluation_reference_price_data = []
+        self.evaluation_period_errors = []
         if self.evaluation_today_mode:
             slot, _ = current_window_start(config.app.timezone)
             self.evaluation_current_slot = slot
@@ -1211,7 +1258,7 @@ class AppState(AuthState):
                 )
                 for p in self.evaluation_periods
             ]
-            error = validate_periods(periods, start_slot=current_slot if today_mode else 0)
+            error = validate_periods(periods, start_slot=current_slot if today_mode else 0, battery=config.battery)
         except Exception as exc:
             async with self:
                 self.evaluation_error = f"Invalid period input: {exc}"
@@ -1354,12 +1401,18 @@ class AppState(AuthState):
             for t in range(48)
         ]
 
+        reference_price_data = [
+            {"time": timestamps[t], "import": result.agile_prices[t], "export": result.export_prices[t]}
+            for t in range(48)
+        ]
+
         async with self:
             self.evaluation_result_cost = round(result.estimated_cost_gbp, 2)
             self.evaluation_solar_kwh = round(result.solar_forecast_kwh, 1)
             self.evaluation_grid_import_kwh = round(result.grid_import_kwh, 1)
             self.evaluation_price_data = price_data
             self.evaluation_solar_data = solar_data
+            self.evaluation_reference_price_data = reference_price_data
             self.evaluation_has_result = True
             self.evaluation_loading = False
 

@@ -22,6 +22,14 @@ def _section_heading(text: str) -> rx.Component:
 def _period_row(period: dict, index: int) -> rx.Component:
     cell_style = {"font_size": "13px", "color": t.FG, "padding": "8px 12px"}
 
+    errors = AppState.evaluation_period_errors
+    has_error_entry = errors.length() > index
+    start_error = rx.cond(has_error_entry, errors[index]["start_time"], "")
+    end_error = rx.cond(has_error_entry, errors[index]["end_time"], "")
+
+    start_border = rx.cond(start_error != "", f"1px solid {t.FAIL}", f"1px solid {t.BORDER}")
+    end_border = rx.cond(end_error != "", f"1px solid {t.FAIL}", f"1px solid {t.BORDER}")
+
     return rx.table.row(
         rx.table.cell(
             rx.cond(
@@ -30,19 +38,39 @@ def _period_row(period: dict, index: int) -> rx.Component:
                     period["start_time"],
                     style={"font_size": "13px", "color": t.MUTED, "padding": "4px 8px"},
                 ),
-                rx.input(
-                    value=period["start_time"],
-                    on_change=lambda v: AppState.update_evaluation_period(index, "start_time", v),
-                    style={"font_size": "13px", "width": "70px", "background": t.SECONDARY, "border": f"1px solid {t.BORDER}", "border_radius": "4px", "padding": "4px 8px", "color": t.FG},
+                rx.vstack(
+                    rx.input(
+                        value=period["start_time"],
+                        on_change=lambda v: AppState.update_evaluation_period(index, "start_time", v),
+                        on_blur=lambda v: AppState.validate_evaluation_period_time(index, "start_time", v),
+                        style={"font_size": "13px", "width": "70px", "background": t.SECONDARY, "border": start_border, "border_radius": "4px", "padding": "4px 8px", "color": t.FG},
+                    ),
+                    rx.cond(
+                        start_error != "",
+                        rx.text(start_error, style={"font_size": "11px", "color": t.FAIL}),
+                        rx.fragment(),
+                    ),
+                    spacing="0",
+                    align="start",
                 ),
             ),
             style=cell_style,
         ),
         rx.table.cell(
-            rx.input(
-                value=period["end_time"],
-                on_change=lambda v: AppState.update_evaluation_period(index, "end_time", v),
-                style={"font_size": "13px", "width": "70px", "background": t.SECONDARY, "border": f"1px solid {t.BORDER}", "border_radius": "4px", "padding": "4px 8px", "color": t.FG},
+            rx.vstack(
+                rx.input(
+                    value=period["end_time"],
+                    on_change=lambda v: AppState.update_evaluation_period(index, "end_time", v),
+                    on_blur=lambda v: AppState.validate_evaluation_period_time(index, "end_time", v),
+                    style={"font_size": "13px", "width": "70px", "background": t.SECONDARY, "border": end_border, "border_radius": "4px", "padding": "4px 8px", "color": t.FG},
+                ),
+                rx.cond(
+                    end_error != "",
+                    rx.text(end_error, style={"font_size": "11px", "color": t.FAIL}),
+                    rx.fragment(),
+                ),
+                spacing="0",
+                align="start",
             ),
             style=cell_style,
         ),
@@ -184,6 +212,7 @@ def _schedule_editor() -> rx.Component:
             rx.button(
                 "+ Add Period",
                 on_click=AppState.add_evaluation_period,
+                disabled=~AppState.evaluation_can_add_period,
                 style={
                     "background": t.SECONDARY,
                     "color": t.FG,
@@ -222,7 +251,7 @@ def _schedule_editor() -> rx.Component:
 
 def _comparison_callout() -> rx.Component:
     return rx.cond(
-        AppState.estimated_cost_gbp > 0,
+        AppState.strategy_valid_until != "",
         rx.box(
             rx.hstack(
                 rx.text(
