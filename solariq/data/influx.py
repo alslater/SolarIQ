@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 SLOTS = 48
 SLOT_MINUTES = 30
+SLOTS_PER_HOUR = 60 // SLOT_MINUTES
 
 
 def _slot_timestamps() -> list[str]:
@@ -64,7 +65,7 @@ def query_solax_usage_day(
 ) -> list[float]:
     """Return 48-slot usage profile (kWh/slot) for target_date from solaxdata.
 
-    Uses MEAN(usage) per 30-min bucket (usage is in kW, × 0.5 h = kWh).
+    Uses MEAN(usage) per slot bucket (usage is in kW, × SLOT_MINUTES/60 h = kWh).
     Returns a list of 48 zeros if the date has no data.
     """
     from_utc, to_utc = _local_day_utc_bounds(target_date, config.app.timezone)
@@ -79,24 +80,25 @@ def query_solax_usage_day(
         f"SELECT MEAN(usage) AS usage "
         f"FROM solaxdata "
         f"WHERE time >= '{from_utc}' AND time <= '{to_utc}' "
-        f"GROUP BY time(30m) fill(0)"
+        f"GROUP BY time({SLOT_MINUTES}m) fill(0)"
     )
+    slot_hours = SLOT_MINUTES / 60
     slots = [0.0] * SLOTS
     for point in result.get_points():
         t_utc = datetime.fromisoformat(point["time"].replace("Z", "+00:00"))
         t_local = t_utc.astimezone(tz)
         if t_local.date() != target_date:
             continue
-        slot = (t_local.hour * 60 + t_local.minute) // 30
+        slot = (t_local.hour * 60 + t_local.minute) // SLOT_MINUTES
         if 0 <= slot < SLOTS:
-            slots[slot] = float(point.get("usage") or 0.0) * 0.5  # kW × 0.5 h = kWh
+            slots[slot] = float(point.get("usage") or 0.0) * slot_hours
     return slots
 
 
 def _query_solax_slots(
     config: SolarIQConfig, from_utc: str, to_utc: str
 ) -> list[dict]:
-    """Query solaxdata aggregated to 30-min slots."""
+    """Query solaxdata aggregated to slot-sized buckets."""
     logger.info(
         "query solaxdata %s → %s (db=%s)", from_utc, to_utc, config.influxdb.solax_database
     )
@@ -110,7 +112,7 @@ def _query_solax_slots(
         f"MEAN(power_out) AS power_out, MEAN(usage) AS usage, LAST(soc) AS soc "
         f"FROM solaxdata "
         f"WHERE time >= '{from_utc}' AND time <= '{to_utc}' "
-        f"GROUP BY time(30m) fill(none)"
+        f"GROUP BY time({SLOT_MINUTES}m) fill(none)"
     )
     points = list(result.get_points())
     logger.info("solaxdata returned %d aggregated slots", len(points))
@@ -121,13 +123,13 @@ def get_today_live_data(
     config: SolarIQConfig,
     today: date | None = None,
 ) -> TodayLiveData:
+    tz = ZoneInfo(config.app.timezone)
+    now_local = datetime.now(tz)
     if today is None:
-        tz = ZoneInfo(config.app.timezone)
-        today = datetime.now(tz).date()
+        today = now_local.date()
 
     logger.info("fetching today live data for %s", today)
     from_utc, to_utc = _local_day_utc_bounds(today, config.app.timezone)
-    tz = ZoneInfo(config.app.timezone)
 
     solax_points = _query_solax_slots(config, from_utc, to_utc)
 
@@ -156,13 +158,22 @@ def get_today_live_data(
     last_data_slot = -1
     battery_soc_pct = 0.0
 
+    if today == now_local.date():
+        total_minutes = now_local.hour * 60 + now_local.minute
+        current_slot = total_minutes // SLOT_MINUTES
+        # Minutes elapsed so far within the current in-progress slot (0..SLOT_MINUTES-1)
+        elapsed_minutes = total_minutes % SLOT_MINUTES
+    else:
+        current_slot = -1
+        elapsed_minutes = SLOT_MINUTES
+
     for point in solax_points:
         t_str = point["time"]
         t_utc = datetime.fromisoformat(t_str.replace("Z", "+00:00"))
         t_local = t_utc.astimezone(tz)
         if t_local.date() != today:
             continue
-        slot = (t_local.hour * 60 + t_local.minute) // 30
+        slot = (t_local.hour * 60 + t_local.minute) // SLOT_MINUTES
         if not 0 <= slot < SLOTS:
             continue
 
@@ -172,11 +183,15 @@ def get_today_live_data(
         usage = point.get("usage")
         soc = point.get("soc")
 
-        actual_solar[slot] = pvpower * 0.5       # mean kW × 0.5 h = kWh
-        actual_grid_import[slot] = power_in * 0.5
-        actual_grid_export[slot] = power_out * 0.5
+        # For the current in-progress slot use elapsed time so the bar shows
+        # actual energy accumulated so far rather than a full-slot extrapolation.
+        hours = elapsed_minutes / 60 if slot == current_slot else SLOT_MINUTES / 60
+
+        actual_solar[slot] = pvpower * hours
+        actual_grid_import[slot] = power_in * hours
+        actual_grid_export[slot] = power_out * hours
         if usage is not None:
-            actual_usage[slot] = float(usage) * 0.5
+            actual_usage[slot] = float(usage) * hours
         if soc is not None:
             actual_battery_soc_kwh[slot] = float(soc) / 100 * config.battery.capacity_kwh
             battery_soc_pct = float(soc)
@@ -185,20 +200,22 @@ def get_today_live_data(
     solar_today_kwh = sum(v for v in actual_solar if v is not None)
     battery_soc_kwh = battery_soc_pct / 100 * config.battery.capacity_kwh
 
-    # Cost = grid import × agile price for each completed slot
+    # Cost/revenue so far today — includes the latest available slot, which may be the
+    # current in-progress slot (scaled by elapsed time) if data has already arrived for it.
     grid_cost_pence = sum(
         (actual_grid_import[i] or 0.0) * agile_prices[i]
         for i in range(last_data_slot + 1)
     ) if last_data_slot >= 0 else 0.0
 
-    # Revenue = grid export × export price for each completed slot
     grid_export_revenue_pence = sum(
         (actual_grid_export[i] or 0.0) * export_prices[i]
         for i in range(last_data_slot + 1)
     ) if last_data_slot >= 0 else 0.0
 
-    current_rate_p = agile_prices[last_data_slot] if last_data_slot >= 0 else 0.0
-    current_export_rate_p = export_prices[last_data_slot] if last_data_slot >= 0 else 0.0
+    # Rate for the current wall-clock slot (today) or last data slot (historical/lagged data)
+    rate_slot = current_slot if 0 <= current_slot < SLOTS else last_data_slot
+    current_rate_p = agile_prices[rate_slot] if rate_slot >= 0 else 0.0
+    current_export_rate_p = export_prices[rate_slot] if rate_slot >= 0 else 0.0
 
     grid_export_today_kwh = sum(v for v in actual_grid_export if v is not None)
     logger.info(
@@ -260,10 +277,10 @@ def get_historical_range_data(
         f"MEAN(power_out) AS power_out, MEAN(battery_power) AS battery_power "
         f"FROM solaxdata "
         f"WHERE time >= '{from_utc}' AND time <= '{to_utc}' "
-        f"GROUP BY time(30m) fill(none)"
+        f"GROUP BY time({SLOT_MINUTES}m) fill(none)"
     )
 
-    # Aggregate 30-min slots into buckets; also accumulate raw slot data for cost calculation
+    # Aggregate slot-sized buckets; also accumulate raw slot data for cost calculation
     # Bucket key: (date, hour) for hourly, (date,) for daily
     energy_buckets: dict[tuple, dict] = {}
     # slot_entries: list of (date, slot_index, import_kwh, export_kwh) for cost join
@@ -276,11 +293,11 @@ def get_historical_range_data(
         if d < start_date or d > end_date:
             continue
 
-        solar_kwh = float(point.get("pvpower") or 0.0) * 0.5
-        import_kwh = float(point.get("power_in") or 0.0) * 0.5
-        export_kwh = float(point.get("power_out") or 0.0) * 0.5
+        solar_kwh = float(point.get("pvpower") or 0.0) * SLOT_MINUTES / 60
+        import_kwh = float(point.get("power_in") or 0.0) * SLOT_MINUTES / 60
+        export_kwh = float(point.get("power_out") or 0.0) * SLOT_MINUTES / 60
         battery_power_kw = float(point.get("battery_power") or 0.0)
-        slot = (t_local.hour * 60 + t_local.minute) // 30
+        slot = (t_local.hour * 60 + t_local.minute) // SLOT_MINUTES
 
         key = (d, t_local.hour) if use_hourly else (d,)
         if key not in energy_buckets:
@@ -309,7 +326,7 @@ def get_historical_range_data(
             t_utc = datetime.fromisoformat(point["time"].replace("Z", "+00:00"))
             t_local = t_utc.astimezone(tz)
             d = t_local.date()
-            slot = (t_local.hour * 60 + t_local.minute) // 30
+            slot = (t_local.hour * 60 + t_local.minute) // SLOT_MINUTES
             import_rate_map[(d, slot)] = float(point.get("agile_rate") or 0.0)
             export_rate_map[(d, slot)] = float(point.get("export_rate") or 0.0)
         logger.debug("rate map: %d import slots, %d export slots", len(import_rate_map), len(export_rate_map))
@@ -326,7 +343,7 @@ def get_historical_range_data(
     export_rate_sum_buckets: dict[tuple, float] = {}
     export_rate_count_buckets: dict[tuple, int] = {}
     for d, slot, import_kwh, export_kwh, solar_kwh, battery_power_kw in slot_entries:
-        key = (d, slot // 2) if use_hourly else (d,)
+        key = (d, slot // SLOTS_PER_HOUR) if use_hourly else (d,)
         cost_buckets[key] = cost_buckets.get(key, 0.0) + import_kwh * import_rate_map.get((d, slot), 0.0)
         revenue_buckets[key] = revenue_buckets.get(key, 0.0) + export_kwh * export_rate_map.get((d, slot), 0.0)
         if (d, slot) in import_rate_map:
@@ -336,9 +353,9 @@ def get_historical_range_data(
             export_rate_sum_buckets[key] = export_rate_sum_buckets.get(key, 0.0) + export_rate_map[(d, slot)]
             export_rate_count_buckets[key] = export_rate_count_buckets.get(key, 0) + 1
         solar_saving_buckets[key] = solar_saving_buckets.get(key, 0.0) + solar_kwh * import_rate_map.get((d, slot), 0.0)
-        local_hour = slot // 2
+        local_hour = slot // SLOTS_PER_HOUR
         if 16 <= local_hour <= 18:
-            battery_discharge_kwh = max(0.0, -battery_power_kw) * 0.5
+            battery_discharge_kwh = max(0.0, -battery_power_kw) * SLOT_MINUTES / 60
             battery_to_load_kwh = max(0.0, battery_discharge_kwh - export_kwh)
             battery_peak_saving_buckets[key] = (
                 battery_peak_saving_buckets.get(key, 0.0)
@@ -571,20 +588,20 @@ def load_solar_forecast_influx(
         logger.warning("load_solar_forecast_influx(%s) query failed: %s", source, exc)
         return None
 
-    if len(raw_points) < 48:
+    if len(raw_points) < SLOTS:
         logger.debug(
             "load_solar_forecast_influx(%s): only %d points for %s, returning None",
             source, len(raw_points), for_date,
         )
         return None
 
-    slots = [0.0] * 48
+    slots = [0.0] * SLOTS
     for point in raw_points:
         t_utc = datetime.fromisoformat(point["time"].replace("Z", "+00:00"))
         t_local = t_utc.astimezone(tz)
         if t_local.date() != for_date:
             continue
-        slot = (t_local.hour * 60 + t_local.minute) // 30
-        if 0 <= slot < 48:
+        slot = (t_local.hour * 60 + t_local.minute) // SLOT_MINUTES
+        if 0 <= slot < SLOTS:
             slots[slot] = float(point.get("pv_estimate_kwh") or 0.0)
     return slots
