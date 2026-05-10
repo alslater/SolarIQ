@@ -1161,7 +1161,7 @@ class AppState(AuthState):
                 "max_charge_kw": 3.6,
                 "min_soc_pct": 10,
             }]
-            self.evaluation_period_errors = [{}]
+            self.evaluation_period_errors = [{"start_time": "", "end_time": ""}]
         else:
             last = self.evaluation_periods[-1]
             self.evaluation_periods = self.evaluation_periods + [{
@@ -1172,7 +1172,7 @@ class AppState(AuthState):
                 "max_charge_kw": 3.6,
                 "min_soc_pct": 10,
             }]
-            self.evaluation_period_errors = self.evaluation_period_errors + [{}]
+            self.evaluation_period_errors = self.evaluation_period_errors + [{"start_time": "", "end_time": ""}]
 
     @rx.event
     def update_evaluation_period(self, index: int, field: str, value):
@@ -1182,7 +1182,7 @@ class AppState(AuthState):
         # Clear the error for this field as the user is typing
         errors = list(self.evaluation_period_errors)
         while len(errors) <= index:
-            errors.append({})
+            errors.append({"start_time": "", "end_time": ""})
         errors[index] = {**errors[index], field: ""}
         self.evaluation_period_errors = errors
 
@@ -1192,7 +1192,7 @@ class AppState(AuthState):
         from solariq.optimizer.simulator import _is_slot_boundary
         errors = list(self.evaluation_period_errors)
         while len(errors) <= index:
-            errors.append({})
+            errors.append({"start_time": "", "end_time": ""})
         if value and not _is_slot_boundary(value):
             errors[index] = {**errors[index], field: f"{value!r} must be HH:00 or HH:30"}
         else:
