@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -51,6 +51,59 @@ def test_get_today_live_data_sums_solar(config):
 
     # 2 UTC slots (23:00, 23:30) roll into May 3 in Europe/London (BST, UTC+1) and are filtered
     assert result.solar_today_kwh == pytest.approx(0.4 * 0.5 * 46, abs=0.01)
+
+
+def test_get_today_live_data_partial_slot_scales_by_elapsed_time(config):
+    """The current in-progress slot must use elapsed minutes, not a full 0.5h.
+
+    At 13:14 BST (12:14 UTC), slot 26 (13:00–13:30) is 14 minutes in.
+    A data point at 13:00 UTC (= 14:00 BST) would be slot 28 — so we use
+    12:00 UTC (= 13:00 BST) for slot 26, and 11:00 UTC (= 12:00 BST) for slot 24.
+    pvpower = 2.0 kW throughout.
+
+    Slot 26 (current): 2.0 kW × (14/60) h ≈ 0.467 kWh
+    Slot 24 (complete): 2.0 kW × (30/60) h = 1.0 kWh
+    """
+    today = date(2026, 5, 2)
+    # 13:14 BST = 12:14 UTC (Europe/London is UTC+1 in May)
+    fake_now = datetime(2026, 5, 2, 12, 14, 0, tzinfo=timezone.utc)
+
+    mock_points = [
+        # slot 24 (12:00 BST = 11:00 UTC) — completed
+        {**_make_mock_point(11, 0, pvpower=2.0), "time": "2026-05-02T11:00:00Z"},
+        # slot 26 (13:00 BST = 12:00 UTC) — current in-progress
+        {**_make_mock_point(12, 0, pvpower=2.0), "time": "2026-05-02T12:00:00Z"},
+    ]
+    mock_client = MagicMock()
+    mock_client.query.return_value.get_points.return_value = mock_points
+
+    with patch("solariq.data.influx.InfluxDBClient", return_value=mock_client), \
+         patch("solariq.data.influx.fetch_agile_prices", return_value=[15.0] * 48), \
+         patch("solariq.data.octopus.fetch_export_prices", return_value=[5.0] * 48), \
+         patch("solariq.data.influx.datetime") as mock_dt:
+        mock_dt.now.return_value = fake_now.astimezone()
+        mock_dt.fromisoformat.side_effect = datetime.fromisoformat
+        result = get_today_live_data(config, today=today)
+
+    assert result.actual_solar[24] == pytest.approx(2.0 * 30 / 60, abs=0.001)  # complete
+    assert result.actual_solar[26] == pytest.approx(2.0 * 14 / 60, abs=0.001)  # partial
+
+
+def test_get_today_live_data_historical_date_uses_full_slots(config):
+    """When today is a past date, all slots use full 0.5h regardless of current time."""
+    historical = date(2026, 4, 1)
+    mock_points = [
+        {**_make_mock_point(11, 0, pvpower=2.0), "time": "2026-04-01T11:00:00Z"},
+    ]
+    mock_client = MagicMock()
+    mock_client.query.return_value.get_points.return_value = mock_points
+
+    with patch("solariq.data.influx.InfluxDBClient", return_value=mock_client), \
+         patch("solariq.data.influx.fetch_agile_prices", return_value=[15.0] * 48), \
+         patch("solariq.data.octopus.fetch_export_prices", return_value=[5.0] * 48):
+        result = get_today_live_data(config, today=historical)
+
+    assert result.actual_solar[24] == pytest.approx(2.0 * 0.5, abs=0.001)
 
 
 def test_get_today_live_data_empty_returns_zeros(config):
