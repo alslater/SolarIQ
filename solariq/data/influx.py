@@ -156,6 +156,11 @@ def get_today_live_data(
     last_data_slot = -1
     battery_soc_pct = 0.0
 
+    now_local = datetime.now(tz)
+    current_slot = (now_local.hour * 60 + now_local.minute) // 30
+    # Minutes elapsed so far within the current in-progress slot (1..30)
+    elapsed_minutes = (now_local.hour * 60 + now_local.minute) % 30 or 30
+
     for point in solax_points:
         t_str = point["time"]
         t_utc = datetime.fromisoformat(t_str.replace("Z", "+00:00"))
@@ -172,11 +177,15 @@ def get_today_live_data(
         usage = point.get("usage")
         soc = point.get("soc")
 
-        actual_solar[slot] = pvpower * 0.5       # mean kW × 0.5 h = kWh
-        actual_grid_import[slot] = power_in * 0.5
-        actual_grid_export[slot] = power_out * 0.5
+        # For the current in-progress slot use elapsed time so the bar shows
+        # actual energy accumulated so far rather than a full-slot extrapolation.
+        hours = elapsed_minutes / 60 if slot == current_slot else 0.5
+
+        actual_solar[slot] = pvpower * hours
+        actual_grid_import[slot] = power_in * hours
+        actual_grid_export[slot] = power_out * hours
         if usage is not None:
-            actual_usage[slot] = float(usage) * 0.5
+            actual_usage[slot] = float(usage) * hours
         if soc is not None:
             actual_battery_soc_kwh[slot] = float(soc) / 100 * config.battery.capacity_kwh
             battery_soc_pct = float(soc)
