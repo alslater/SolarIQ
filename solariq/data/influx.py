@@ -63,9 +63,9 @@ def query_solar_electricity_range(
 def query_solax_usage_day(
     config: SolarIQConfig, target_date: date
 ) -> list[float]:
-    """Return 48-slot usage profile (kWh/slot) for target_date from solaxdata.
+    """Return 48-slot solar generation profile (kWh/slot) for target_date from solaxdata.
 
-    Uses MEAN(usage) per slot bucket (usage is in kW, × SLOT_MINUTES/60 h = kWh).
+    Uses MEAN(pvpower) per slot bucket (pvpower is in kW, × SLOT_MINUTES/60 h = kWh).
     Returns a list of 48 zeros if the date has no data.
     """
     from_utc, to_utc = _local_day_utc_bounds(target_date, config.app.timezone)
@@ -77,7 +77,7 @@ def query_solax_usage_day(
         database=config.influxdb.solax_database,
     )
     result = client.query(
-        f"SELECT MEAN(usage) AS usage "
+        f"SELECT MEAN(pvpower) AS pvpower "
         f"FROM solaxdata "
         f"WHERE time >= '{from_utc}' AND time <= '{to_utc}' "
         f"GROUP BY time({SLOT_MINUTES}m) fill(0)"
@@ -91,7 +91,7 @@ def query_solax_usage_day(
             continue
         slot = (t_local.hour * 60 + t_local.minute) // SLOT_MINUTES
         if 0 <= slot < SLOTS:
-            slots[slot] = float(point.get("usage") or 0.0) * slot_hours
+            slots[slot] = float(point.get("pvpower") or 0.0) * slot_hours
     return slots
 
 
@@ -250,7 +250,7 @@ def get_historical_range_data(
 ) -> list[dict]:
     """Return per-bucket energy data for start_date..end_date inclusive.
 
-    Buckets are hourly for ranges ≤7 days, daily otherwise.
+    Buckets are 30-minute slots for ranges ≤7 days, daily otherwise.
     Each row: {date, solar_kwh, predicted_solar_kwh, grid_import_kwh, grid_export_kwh, grid_cost_gbp, grid_export_revenue_gbp}
     """
     from datetime import timedelta
@@ -260,11 +260,12 @@ def get_historical_range_data(
     _, to_utc = _local_day_utc_bounds(end_date, config.app.timezone)
 
     delta_days = (end_date - start_date).days + 1
-    use_hourly = delta_days <= 7
+    use_slot = delta_days <= 7
+    use_hourly = False  # kept for daily bucket path below
 
     logger.info(
         "historical range query: %s → %s (%s → %s), bucket=%s",
-        start_date, end_date, from_utc, to_utc, "hourly" if use_hourly else "daily",
+        start_date, end_date, from_utc, to_utc, "30m" if use_slot else "daily",
     )
 
     client = InfluxDBClient(
@@ -299,7 +300,7 @@ def get_historical_range_data(
         battery_power_kw = float(point.get("battery_power") or 0.0)
         slot = (t_local.hour * 60 + t_local.minute) // SLOT_MINUTES
 
-        key = (d, t_local.hour) if use_hourly else (d,)
+        key = (d, slot) if use_slot else (d,)
         if key not in energy_buckets:
             energy_buckets[key] = {"solar_kwh": 0.0, "grid_import_kwh": 0.0, "grid_export_kwh": 0.0}
         energy_buckets[key]["solar_kwh"] += solar_kwh
@@ -343,7 +344,7 @@ def get_historical_range_data(
     export_rate_sum_buckets: dict[tuple, float] = {}
     export_rate_count_buckets: dict[tuple, int] = {}
     for d, slot, import_kwh, export_kwh, solar_kwh, battery_power_kw in slot_entries:
-        key = (d, slot // SLOTS_PER_HOUR) if use_hourly else (d,)
+        key = (d, slot) if use_slot else (d,)
         cost_buckets[key] = cost_buckets.get(key, 0.0) + import_kwh * import_rate_map.get((d, slot), 0.0)
         revenue_buckets[key] = revenue_buckets.get(key, 0.0) + export_kwh * export_rate_map.get((d, slot), 0.0)
         if (d, slot) in import_rate_map:
@@ -388,20 +389,22 @@ def get_historical_range_data(
                 d = t_local.date()
                 if d < start_date or d > end_date:
                     continue
-                key = (d, t_local.hour) if use_hourly else (d,)
+                slot_idx = (t_local.hour * 60 + t_local.minute) // SLOT_MINUTES
+                key = (d, slot_idx) if use_slot else (d,)
                 bucket_map[key] = bucket_map.get(key, 0.0) + float(point.get("pv_estimate_kwh") or 0.0)
         except Exception as exc:
             logger.warning("%s forecast query failed for history: %s", source_name, exc)
 
     # Build output rows covering every bucket in the range
-    prec = 3 if use_hourly else 2
+    prec = 3 if use_slot else 2
     rows = []
     cursor = start_date
     while cursor <= end_date:
-        if use_hourly:
-            for h in range(24):
-                key = (cursor, h)
-                label = f"{h:02d}:00" if delta_days == 1 else f"{cursor.strftime('%d %b')} {h:02d}:00"
+        if use_slot:
+            for s in range(SLOTS):
+                key = (cursor, s)
+                h, m = divmod(s * SLOT_MINUTES, 60)
+                label = f"{h:02d}:{m:02d}" if delta_days == 1 else f"{cursor.strftime('%d %b')} {h:02d}:{m:02d}"
                 bucket = energy_buckets.get(key, {"solar_kwh": 0.0, "grid_import_kwh": 0.0, "grid_export_kwh": 0.0})
                 predicted_solcast = predicted_solcast_buckets.get(key, 0.0)
                 predicted_forecast_solar = predicted_forecast_solar_buckets.get(key, 0.0)
@@ -462,7 +465,7 @@ def get_historical_range_data(
 
     logger.info(
         "historical range: %d %s buckets, %d with solar data",
-        len(rows), "hourly" if use_hourly else "daily",
+        len(rows), "30m" if use_slot else "daily",
         sum(1 for r in rows if r["solar_kwh"] > 0),
     )
     return rows
