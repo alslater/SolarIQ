@@ -11,7 +11,8 @@ Usage:
 
 import argparse
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 
 def _parse_args() -> argparse.Namespace:
@@ -66,7 +67,7 @@ def _parse_args() -> argparse.Namespace:
     return args
 
 
-def _resolve_dates(args: argparse.Namespace) -> tuple[date, date]:
+def _resolve_dates(args: argparse.Namespace, tz_name: str) -> tuple[date, date]:
     if args.start:
         try:
             start = date.fromisoformat(args.start)
@@ -78,7 +79,7 @@ def _resolve_dates(args: argparse.Namespace) -> tuple[date, date]:
             print("ERROR: --end must be on or after --start", file=sys.stderr)
             sys.exit(1)
         return start, end
-    today = date.today()
+    today = datetime.now(ZoneInfo(tz_name)).date()
     end = today - timedelta(days=1)
     start = end - timedelta(days=args.days - 1)
     return start, end
@@ -224,12 +225,12 @@ def _write_excel(results: list, path: str) -> None:
 
 def main() -> None:
     args = _parse_args()
-    start, end = _resolve_dates(args)
 
     from solariq.config import load_config
     from solariq.data.forecast_accuracy import compute_range_accuracy
 
     config = load_config()
+    start, end = _resolve_dates(args, config.app.timezone)
     results = compute_range_accuracy(config, start, end)
 
     if not results:
