@@ -147,6 +147,15 @@ def test_validate_battery_checks_skipped_without_battery():
     assert validate_periods(periods) is None
 
 
+def test_simulate_raises_on_invalid_start_slot(config):
+    periods = [UserPeriod("00:00", "24:00", "Self Use")]
+    forecast = _make_forecast()
+    with pytest.raises(ValueError, match="start_slot"):
+        simulate(periods, forecast, config.battery, start_slot=-1)
+    with pytest.raises(ValueError, match="start_slot"):
+        simulate(periods, forecast, config.battery, start_slot=48)
+
+
 def test_simulate_raises_if_periods_do_not_cover_window(config):
     """simulate() must raise ValueError if periods leave a gap, rather than producing
     a silent IndexError or misaligned results — defensive check for direct callers
@@ -279,6 +288,12 @@ def test_simulate_charge_mode_exports_excess_solar(config):
     assert sum(result.grid_export_forecast) > 0
     # And grid import should be minimal (only load when battery already full)
     assert sum(result.grid_import_forecast) < 0.1 * SLOTS
+
+
+def test_validate_rejects_invalid_start_slot():
+    periods = [UserPeriod("00:00", "24:00", "Self Use")]
+    assert validate_periods(periods, start_slot=-1) is not None
+    assert validate_periods(periods, start_slot=49) is not None
 
 
 def test_validate_accepts_partial_day_from_slot():

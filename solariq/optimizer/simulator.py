@@ -45,6 +45,9 @@ def validate_periods(periods: list[UserPeriod], start_slot: int = 0, battery=Non
     - max_charge_kw must be > 0 and <= battery.max_charge_kw
     - target_soc_pct (Charge mode) must be >= battery.min_soc_pct
     """
+    if not 0 <= start_slot <= SLOTS:
+        return f"start_slot must be in 0..{SLOTS} (got {start_slot})."
+
     if not periods:
         return "At least one period is required."
 
@@ -120,6 +123,9 @@ def simulate(periods: list[UserPeriod], forecast, battery, start_slot: int = 0) 
     `battery` must have attributes:
         capacity_kwh, min_soc_kwh, max_charge_kwh_per_slot
     """
+    if not 0 <= start_slot < SLOTS:
+        raise ValueError(f"start_slot must be in 0..{SLOTS - 1} (got {start_slot}).")
+
     # Build a 48-entry slot → period mapping indexed by absolute slot number.
     # Slots before start_slot are left as None (not simulated).
     sorted_periods = sorted(periods, key=lambda p: _time_to_slot(p.start_time))

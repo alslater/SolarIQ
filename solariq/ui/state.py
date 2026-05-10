@@ -1088,9 +1088,9 @@ class AppState(AuthState):
         if self.evaluation_periods[-1].get("end_time") == "24:00":
             return False
         # Also block if the last period has a time validation error
-        if self.evaluation_period_errors:
-            last_errors = self.evaluation_period_errors[-1] if len(self.evaluation_period_errors) >= len(self.evaluation_periods) else {}
-            if last_errors.get("end_time"):
+        idx = len(self.evaluation_periods) - 1
+        if len(self.evaluation_period_errors) > idx:
+            if self.evaluation_period_errors[idx].get("end_time"):
                 return False
         return True
 
@@ -1356,15 +1356,67 @@ class AppState(AuthState):
                 battery_soc_forecast=soc_48,
             )
         else:
-            forecast = await asyncio.to_thread(load_strategy)
-            if forecast is None:
+            # Build a midnight-based forecast for tomorrow's calendar day.
+            # load_strategy() returns a rolling-window array starting at window_start
+            # (e.g. 16:00), so slot indices there don't match the midnight-based
+            # HH:MM times that validate_periods/_time_to_slot use. Fetching tomorrow's
+            # arrays directly gives slot 0 = 00:00 .. slot 47 = 23:30.
+            tz = ZoneInfo(config.app.timezone)
+            tomorrow = _tomorrow(config)
+            settings = get_forecast_settings(config.app.auth_db_path)
+
+            try:
+                agile_tmrw = await asyncio.to_thread(fetch_agile_prices, config, tomorrow)
+                export_tmrw = await asyncio.to_thread(fetch_export_prices, config, tomorrow)
+            except Exception as exc:
                 async with self:
-                    self.evaluation_error = "No forecast available — run the optimizer first."
+                    self.evaluation_error = f"Could not fetch tomorrow's prices: {exc}"
                     self.evaluation_loading = False
                 return
-            # Always use midnight-based timestamps in Tomorrow mode so chart axis labels
-            # match the HH:MM times users enter in the schedule editor (which validate_periods
-            # and _time_to_slot always interpret as offsets from 00:00).
+
+            if not _prices_published(agile_tmrw):
+                async with self:
+                    self.evaluation_error = "Tomorrow's Agile prices aren't published yet — try after 16:00."
+                    self.evaluation_loading = False
+                return
+
+            # Solar forecast: prefer cached Solcast, fall back to forecast.solar
+            solar_tmrw = None
+            if settings.collect_solcast:
+                solar_tmrw = await asyncio.to_thread(
+                    load_solar_forecast_influx, config, tomorrow, source="solcast"
+                )
+            if solar_tmrw is None and settings.collect_forecast_solar:
+                solar_tmrw = await asyncio.to_thread(
+                    load_solar_forecast_influx, config, tomorrow, source="forecast_solar"
+                )
+            if solar_tmrw is None:
+                solar_tmrw = [0.0] * 48
+
+            load_tmrw = await asyncio.to_thread(build_load_profile, config, tomorrow)
+
+            # Normalise to exactly 48 slots
+            agile_48 = (list(agile_tmrw) + [0.0] * 48)[:48]
+            export_48 = (list(export_tmrw) + [0.0] * 48)[:48]
+            solar_48 = (list(solar_tmrw) + [0.0] * 48)[:48]
+            load_48 = (list(load_tmrw) + [0.0] * 48)[:48]
+
+            # Use current battery SOC as initial SOC for tomorrow simulation
+            try:
+                today_data = await asyncio.to_thread(get_today_live_data, config)
+                initial_soc = today_data.battery_soc_kwh or (config.battery.capacity_kwh * 0.5)
+            except Exception:
+                initial_soc = config.battery.capacity_kwh * 0.5
+
+            soc_48 = [initial_soc] + [0.0] * 47
+
+            forecast = _TodayForecast(
+                agile_prices=agile_48,
+                export_prices=export_48,
+                solar_forecast=solar_48,
+                load_forecast=load_48,
+                battery_soc_forecast=soc_48,
+            )
             timestamps = [
                 f"{(t * 30) // 60:02d}:{(t * 30) % 60:02d}" for t in range(48)
             ]
