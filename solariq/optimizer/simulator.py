@@ -65,6 +65,11 @@ def validate_periods(periods: list[UserPeriod], start_slot: int = 0, battery=Non
         if start >= end:
             return f"Period start ({p.start_time}) must be before end ({p.end_time})."
 
+    valid_modes = {"Charge", "Self Use"}
+    for p in periods:
+        if p.mode not in valid_modes:
+            return f"Unknown period mode {p.mode!r}. Must be one of: {', '.join(sorted(valid_modes))}."
+
     for p in periods:
         if p.mode == "Charge":
             if not (0 <= p.target_soc_pct <= 100):
@@ -150,6 +155,9 @@ def simulate(periods: list[UserPeriod], forecast, battery, start_slot: int = 0) 
         target_soc_kwh = capacity_kwh * p.target_soc_pct / 100 if p.mode == "Charge" else 0.0
         p_min_soc_kwh = capacity_kwh * p.min_soc_pct / 100 if p.mode == "Self Use" else min_soc_kwh
         max_charge_slot = min(p.max_charge_kw / 2, battery.max_charge_kwh_per_slot) if p.mode == "Charge" else battery.max_charge_kwh_per_slot
+
+        if p.mode not in ("Charge", "Self Use"):
+            raise ValueError(f"Unexpected period mode {p.mode!r} at slot {t}. Call validate_periods() before simulate().")
 
         if p.mode == "Charge":
             charge_mode_slots[t] = True

@@ -1098,8 +1098,10 @@ class AppState(AuthState):
     def evaluation_agile_chart_data(self) -> list[dict]:
         """Agile import and export prices for the reference chart above the schedule editor.
 
-        Populated from evaluation_reference_price_data (written by evaluate_schedule), falling
-        back to today_price_data / tomorrow_price_data when available (e.g. Today tab visited).
+        Populated from evaluation_reference_price_data (written by evaluate_schedule). In Today
+        mode, falls back to today_price_data (also midnight-based). Tomorrow mode has no fallback
+        because tomorrow_price_data uses rolling-window timestamps that don't align with the
+        midnight-based schedule editor times.
         """
         if self.evaluation_reference_price_data:
             return self.evaluation_reference_price_data
@@ -1108,10 +1110,7 @@ class AppState(AuthState):
                 {"time": row["time"], "import": row.get("import", 0.0), "export": row.get("export", 0.0)}
                 for row in self.today_price_data
             ]
-        return [
-            {"time": row["time"], "import": row.get("price", 0.0), "export": row.get("export", 0.0)}
-            for row in self.tomorrow_price_data
-        ]
+        return []
 
     @rx.var
     def filtered_strategy_periods(self) -> list[dict]:
@@ -1247,17 +1246,25 @@ class AppState(AuthState):
         current_slot = self.evaluation_current_slot
 
         try:
-            periods = [
-                UserPeriod(
+            periods = []
+            for p in self.evaluation_periods:
+                mode = p["mode"]
+                if mode == "Charge":
+                    target_soc_pct = int(p.get("target_soc_pct", 100))
+                    max_charge_kw = float(p.get("max_charge_kw", config.battery.max_charge_kw))
+                    min_soc_pct = config.battery.min_soc_pct
+                else:
+                    target_soc_pct = 100
+                    max_charge_kw = config.battery.max_charge_kw
+                    min_soc_pct = int(p.get("min_soc_pct", config.battery.min_soc_pct))
+                periods.append(UserPeriod(
                     start_time=p["start_time"],
                     end_time=p["end_time"],
-                    mode=p["mode"],
-                    target_soc_pct=int(p.get("target_soc_pct", 100)),
-                    max_charge_kw=float(p.get("max_charge_kw", config.battery.max_charge_kw)),
-                    min_soc_pct=int(p.get("min_soc_pct", 10)),
-                )
-                for p in self.evaluation_periods
-            ]
+                    mode=mode,
+                    target_soc_pct=target_soc_pct,
+                    max_charge_kw=max_charge_kw,
+                    min_soc_pct=min_soc_pct,
+                ))
             error = validate_periods(periods, start_slot=current_slot if today_mode else 0, battery=config.battery)
         except Exception as exc:
             async with self:
@@ -1355,16 +1362,12 @@ class AppState(AuthState):
                     self.evaluation_error = "No forecast available — run the optimizer first."
                     self.evaluation_loading = False
                 return
-            if forecast.window_start:
-                ws = datetime.fromisoformat(forecast.window_start)
-                timestamps = [
-                    (ws + timedelta(minutes=t * 30)).strftime("%H:%M")
-                    for t in range(48)
-                ]
-            else:
-                timestamps = [
-                    f"{(t * 30) // 60:02d}:{(t * 30) % 60:02d}" for t in range(48)
-                ]
+            # Always use midnight-based timestamps in Tomorrow mode so chart axis labels
+            # match the HH:MM times users enter in the schedule editor (which validate_periods
+            # and _time_to_slot always interpret as offsets from 00:00).
+            timestamps = [
+                f"{(t * 30) // 60:02d}:{(t * 30) % 60:02d}" for t in range(48)
+            ]
 
         try:
             result = await asyncio.to_thread(

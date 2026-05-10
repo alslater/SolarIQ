@@ -364,6 +364,21 @@ def test_validate_rejects_out_of_range_minutes():
     assert "23:60" in error
 
 
+def test_validate_rejects_unknown_mode():
+    periods = [UserPeriod("00:00", "24:00", "Discharge")]
+    error = validate_periods(periods)
+    assert error is not None
+    assert "Discharge" in error
+
+
+def test_simulate_raises_on_unknown_mode(config):
+    """simulate() must raise rather than silently treat an unknown mode as Self Use."""
+    periods = [UserPeriod("00:00", "24:00", "Discharge")]
+    forecast = _make_forecast(solar=0.0, load=0.0, initial_soc_kwh=0.0)
+    with pytest.raises(ValueError, match="Discharge"):
+        simulate(periods, forecast, config.battery)
+
+
 def test_validate_rejects_non_half_hour_boundary():
     """Times that don't fall on a half-hour boundary (e.g. '21:45') must be rejected.
 
