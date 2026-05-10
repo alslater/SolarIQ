@@ -4,6 +4,7 @@ import logging
 import math
 from dataclasses import dataclass
 from datetime import date, timedelta
+from typing import Literal
 
 from solariq.config import SolarIQConfig
 from solariq.data.influx import load_solar_forecast_influx, query_solax_pv_day
@@ -24,7 +25,8 @@ class DayAccuracy:
 
 
 def _mae(actual: list[float], forecast: list[float]) -> float:
-    assert len(actual) == len(forecast)
+    if len(actual) != len(forecast):
+        raise ValueError(f"actual and forecast must have the same length ({len(actual)} vs {len(forecast)})")
     pairs = [(a, f) for a, f in zip(actual, forecast) if a > 0.0]
     if not pairs:
         return 0.0
@@ -32,7 +34,8 @@ def _mae(actual: list[float], forecast: list[float]) -> float:
 
 
 def _rmse(actual: list[float], forecast: list[float]) -> float:
-    assert len(actual) == len(forecast)
+    if len(actual) != len(forecast):
+        raise ValueError(f"actual and forecast must have the same length ({len(actual)} vs {len(forecast)})")
     pairs = [(a, f) for a, f in zip(actual, forecast) if a > 0.0]
     if not pairs:
         return 0.0
@@ -67,23 +70,28 @@ def compute_daily_accuracy(config: SolarIQConfig, target: date) -> "DayAccuracy 
     )
 
 
-def overall_mae(results: list[DayAccuracy], source: str) -> float:
-    """True MAE across all daylight slots in the result set."""
+ForecastSource = Literal["solcast", "forecast_solar"]
+
+
+def _daylight_pairs(results: list[DayAccuracy], source: ForecastSource) -> list[tuple[float, float]]:
     if source == "solcast":
-        pairs = [(a, f) for r in results for a, f in zip(r.actual_slots, r.solcast_slots) if a > 0.0]
-    else:
-        pairs = [(a, f) for r in results for a, f in zip(r.actual_slots, r.forecast_solar_slots) if a > 0.0]
+        return [(a, f) for r in results for a, f in zip(r.actual_slots, r.solcast_slots) if a > 0.0]
+    if source == "forecast_solar":
+        return [(a, f) for r in results for a, f in zip(r.actual_slots, r.forecast_solar_slots) if a > 0.0]
+    raise ValueError(f"unknown source {source!r}; expected 'solcast' or 'forecast_solar'")
+
+
+def overall_mae(results: list[DayAccuracy], source: ForecastSource) -> float:
+    """True MAE across all daylight slots in the result set."""
+    pairs = _daylight_pairs(results, source)
     if not pairs:
         return 0.0
     return sum(abs(f - a) for a, f in pairs) / len(pairs)
 
 
-def overall_rmse(results: list[DayAccuracy], source: str) -> float:
+def overall_rmse(results: list[DayAccuracy], source: ForecastSource) -> float:
     """True RMSE across all daylight slots in the result set (single sqrt over pooled MSE)."""
-    if source == "solcast":
-        pairs = [(a, f) for r in results for a, f in zip(r.actual_slots, r.solcast_slots) if a > 0.0]
-    else:
-        pairs = [(a, f) for r in results for a, f in zip(r.actual_slots, r.forecast_solar_slots) if a > 0.0]
+    pairs = _daylight_pairs(results, source)
     if not pairs:
         return 0.0
     return math.sqrt(sum((f - a) ** 2 for a, f in pairs) / len(pairs))

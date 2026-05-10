@@ -214,6 +214,11 @@ def test_avg_rate_includes_zero_and_negative_rates(config):
     assert len(rated_rows) == 2
     rates = sorted(r["avg_import_rate_p"] for r in rated_rows)
     assert rates == pytest.approx([-5.0, 5.0], abs=0.001)
+    # export_rate is 0.0 for both slots — must be retained, not treated as missing
+    export_rated_rows = [r for r in rows if r.get("avg_export_rate_p") is not None]
+    assert len(export_rated_rows) == 2
+    export_rates = sorted(r["avg_export_rate_p"] for r in export_rated_rows)
+    assert export_rates == pytest.approx([0.0, 0.0], abs=0.001)
 
 
 def test_avg_rate_present_in_all_rows(config):

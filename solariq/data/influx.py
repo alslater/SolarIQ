@@ -296,7 +296,6 @@ def get_historical_range_data(
 
     delta_days = (end_date - start_date).days + 1
     use_slot = delta_days <= 7
-    use_hourly = False  # kept for daily bucket path below
 
     logger.info(
         "historical range query: %s → %s (%s → %s), bucket=%s",
