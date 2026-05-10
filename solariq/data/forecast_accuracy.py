@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 
 from solariq.config import SolarIQConfig
-from solariq.data.influx import load_solar_forecast_influx, query_solax_usage_day
+from solariq.data.influx import load_solar_forecast_influx, query_solax_pv_day
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +40,7 @@ def _rmse(actual: list[float], forecast: list[float]) -> float:
 
 
 def compute_daily_accuracy(config: SolarIQConfig, target: date) -> "DayAccuracy | None":
-    actual = query_solax_usage_day(config, target)
+    actual = query_solax_pv_day(config, target)
     if all(v == 0.0 for v in actual):
         logger.warning("no actual PV data for %s, skipping", target)
         return None

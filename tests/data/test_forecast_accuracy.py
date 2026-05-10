@@ -66,7 +66,7 @@ def test_compute_daily_accuracy_returns_none_when_actual_all_zeros():
     actual = [0.0] * 48
     solcast = [0.1] * 48
     fs = [0.1] * 48
-    with patch("solariq.data.forecast_accuracy.query_solax_usage_day", return_value=actual), \
+    with patch("solariq.data.forecast_accuracy.query_solax_pv_day", return_value=actual), \
          patch("solariq.data.forecast_accuracy.load_solar_forecast_influx", side_effect=[solcast, fs]):
         result = compute_daily_accuracy(config, target)
     assert result is None
@@ -75,7 +75,7 @@ def test_compute_daily_accuracy_returns_none_when_solcast_missing():
     config = _make_config()
     target = date(2026, 5, 1)
     actual = [0.0] * 44 + [0.5, 0.5, 0.5, 0.5]
-    with patch("solariq.data.forecast_accuracy.query_solax_usage_day", return_value=actual), \
+    with patch("solariq.data.forecast_accuracy.query_solax_pv_day", return_value=actual), \
          patch("solariq.data.forecast_accuracy.load_solar_forecast_influx", side_effect=[None, [0.1] * 48]):
         result = compute_daily_accuracy(config, target)
     assert result is None
@@ -84,7 +84,7 @@ def test_compute_daily_accuracy_returns_none_when_forecast_solar_missing():
     config = _make_config()
     target = date(2026, 5, 1)
     actual = [0.0] * 44 + [0.5, 0.5, 0.5, 0.5]
-    with patch("solariq.data.forecast_accuracy.query_solax_usage_day", return_value=actual), \
+    with patch("solariq.data.forecast_accuracy.query_solax_pv_day", return_value=actual), \
          patch("solariq.data.forecast_accuracy.load_solar_forecast_influx", side_effect=[[0.1] * 48, None]):
         result = compute_daily_accuracy(config, target)
     assert result is None
@@ -95,7 +95,7 @@ def test_compute_daily_accuracy_computes_metrics():
     actual = [0.0] * 40 + [1.0] * 8
     solcast = [0.0] * 40 + [1.5] * 8
     fs = [0.0] * 40 + [0.5] * 8
-    with patch("solariq.data.forecast_accuracy.query_solax_usage_day", return_value=actual), \
+    with patch("solariq.data.forecast_accuracy.query_solax_pv_day", return_value=actual), \
          patch("solariq.data.forecast_accuracy.load_solar_forecast_influx", side_effect=[solcast, fs]):
         result = compute_daily_accuracy(config, target)
     assert result is not None
@@ -131,7 +131,7 @@ def test_compute_range_accuracy_skips_missing_days():
             return solcast_good
         return fs_good
 
-    with patch("solariq.data.forecast_accuracy.query_solax_usage_day", side_effect=fake_query_solax), \
+    with patch("solariq.data.forecast_accuracy.query_solax_pv_day", side_effect=fake_query_solax), \
          patch("solariq.data.forecast_accuracy.load_solar_forecast_influx", side_effect=fake_load_forecast):
         results = compute_range_accuracy(config, start, end)
 
@@ -144,7 +144,7 @@ def test_compute_range_accuracy_returns_empty_list_when_no_valid_days():
     start = date(2026, 5, 1)
     end = date(2026, 5, 1)
 
-    with patch("solariq.data.forecast_accuracy.query_solax_usage_day", return_value=[0.0] * 48), \
+    with patch("solariq.data.forecast_accuracy.query_solax_pv_day", return_value=[0.0] * 48), \
          patch("solariq.data.forecast_accuracy.load_solar_forecast_influx", return_value=[0.1] * 48):
         results = compute_range_accuracy(config, start, end)
 

@@ -63,6 +63,41 @@ def query_solar_electricity_range(
 def query_solax_usage_day(
     config: SolarIQConfig, target_date: date
 ) -> list[float]:
+    """Return 48-slot household usage profile (kWh/slot) for target_date from solaxdata.
+
+    Uses MEAN(usage) per slot bucket (usage is in kW, × SLOT_MINUTES/60 h = kWh).
+    Returns a list of 48 zeros if the date has no data.
+    """
+    from_utc, to_utc = _local_day_utc_bounds(target_date, config.app.timezone)
+    tz = ZoneInfo(config.app.timezone)
+    logger.debug("query solaxdata usage for %s (%s → %s)", target_date, from_utc, to_utc)
+    client = InfluxDBClient(
+        host=config.influxdb.host,
+        port=config.influxdb.port,
+        database=config.influxdb.solax_database,
+    )
+    result = client.query(
+        f"SELECT MEAN(usage) AS usage "
+        f"FROM solaxdata "
+        f"WHERE time >= '{from_utc}' AND time <= '{to_utc}' "
+        f"GROUP BY time({SLOT_MINUTES}m) fill(0)"
+    )
+    slot_hours = SLOT_MINUTES / 60
+    slots = [0.0] * SLOTS
+    for point in result.get_points():
+        t_utc = datetime.fromisoformat(point["time"].replace("Z", "+00:00"))
+        t_local = t_utc.astimezone(tz)
+        if t_local.date() != target_date:
+            continue
+        slot = (t_local.hour * 60 + t_local.minute) // SLOT_MINUTES
+        if 0 <= slot < SLOTS:
+            slots[slot] = float(point.get("usage") or 0.0) * slot_hours
+    return slots
+
+
+def query_solax_pv_day(
+    config: SolarIQConfig, target_date: date
+) -> list[float]:
     """Return 48-slot solar generation profile (kWh/slot) for target_date from solaxdata.
 
     Uses MEAN(pvpower) per slot bucket (pvpower is in kW, × SLOT_MINUTES/60 h = kWh).
@@ -70,7 +105,7 @@ def query_solax_usage_day(
     """
     from_utc, to_utc = _local_day_utc_bounds(target_date, config.app.timezone)
     tz = ZoneInfo(config.app.timezone)
-    logger.debug("query solaxdata usage for %s (%s → %s)", target_date, from_utc, to_utc)
+    logger.debug("query solaxdata pvpower for %s (%s → %s)", target_date, from_utc, to_utc)
     client = InfluxDBClient(
         host=config.influxdb.host,
         port=config.influxdb.port,
