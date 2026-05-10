@@ -1,4 +1,4 @@
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
@@ -82,9 +82,8 @@ def test_get_today_live_data_partial_slot_scales_by_elapsed_time(config):
     with patch("solariq.data.influx.InfluxDBClient", return_value=mock_client), \
          patch("solariq.data.influx.fetch_agile_prices", return_value=[15.0] * 48), \
          patch("solariq.data.octopus.fetch_export_prices", return_value=[5.0] * 48), \
-         patch("solariq.data.influx.datetime") as mock_dt:
+         patch("solariq.data.influx.datetime", wraps=datetime) as mock_dt:
         mock_dt.now.return_value = fake_now
-        mock_dt.fromisoformat.side_effect = datetime.fromisoformat
         result = get_today_live_data(config, today=today)
 
     assert result.actual_solar[24] == pytest.approx(2.0 * 30 / 60, abs=0.001)  # complete
@@ -94,6 +93,10 @@ def test_get_today_live_data_partial_slot_scales_by_elapsed_time(config):
 def test_get_today_live_data_historical_date_uses_full_slots(config):
     """When today is a past date, all slots use full 0.5h regardless of current time."""
     historical = date(2026, 4, 1)
+    tz = ZoneInfo("Europe/London")
+    # Freeze wall clock to a fixed recent date so the test is deterministic
+    # even if the suite happens to run on 2026-04-01.
+    fake_now = datetime(2026, 5, 2, 10, 0, 0, tzinfo=tz)
     mock_points = [
         {**_make_mock_point(11, 0, pvpower=2.0), "time": "2026-04-01T11:00:00Z"},
     ]
@@ -102,7 +105,9 @@ def test_get_today_live_data_historical_date_uses_full_slots(config):
 
     with patch("solariq.data.influx.InfluxDBClient", return_value=mock_client), \
          patch("solariq.data.influx.fetch_agile_prices", return_value=[15.0] * 48), \
-         patch("solariq.data.octopus.fetch_export_prices", return_value=[5.0] * 48):
+         patch("solariq.data.octopus.fetch_export_prices", return_value=[5.0] * 48), \
+         patch("solariq.data.influx.datetime", wraps=datetime) as mock_dt:
+        mock_dt.now.return_value = fake_now
         result = get_today_live_data(config, today=historical)
 
     assert result.actual_solar[24] == pytest.approx(2.0 * 0.5, abs=0.001)
