@@ -195,9 +195,9 @@ def simulate(periods: list[UserPeriod], forecast, battery, start_slot: int = 0) 
             # Export any remaining solar surplus
             ge = max(0.0, solar_after_charge)
 
-            # Discharge battery to cover load deficit
+            # Discharge battery to cover load deficit (capped by same per-slot power limit as charge)
             discharge_available = max(0.0, soc - effective_min_soc)
-            discharge = min(load_deficit, discharge_available)
+            discharge = min(load_deficit, discharge_available, battery.max_charge_kwh_per_slot)
             remaining_deficit = load_deficit - discharge
 
             # Grid import covers whatever battery can't

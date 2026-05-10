@@ -1083,6 +1083,8 @@ class AppState(AuthState):
 
     @rx.var
     def evaluation_can_add_period(self) -> bool:
+        if len(self.evaluation_periods) >= 10:
+            return False
         if not self.evaluation_periods:
             return True
         if self.evaluation_periods[-1].get("end_time") == "24:00":

@@ -202,6 +202,22 @@ def test_simulate_self_use_discharges_to_min_soc(config):
     assert all(soc >= min_soc_kwh - 0.01 for soc in result.battery_soc_forecast)
 
 
+def test_simulate_self_use_discharge_capped_by_power_limit(config):
+    """Discharge per slot must not exceed battery.max_charge_kwh_per_slot even when
+    load deficit is larger — otherwise cost estimates undercount grid import.
+    """
+    battery = config.battery  # max_charge_kwh_per_slot = 7.5 / 2 = 3.75
+    # Load much larger than the per-slot discharge limit; battery starts full
+    periods = [UserPeriod("00:00", "24:00", "Self Use", min_soc_pct=0)]
+    forecast = _make_forecast(solar=0.0, load=battery.max_charge_kwh_per_slot * 3, initial_soc_kwh=battery.capacity_kwh)
+    result = simulate(periods, forecast, battery)
+    for t in range(48):
+        # discharge = grid_import + solar - grid_export subtracted from load; since solar=export=0:
+        # discharge = load - grid_import  →  discharge <= max_charge_kwh_per_slot
+        discharge = max(0.0, forecast.load_forecast[t] - result.grid_import_forecast[t])
+        assert discharge <= battery.max_charge_kwh_per_slot + 1e-9
+
+
 def test_simulate_energy_balance_holds_each_slot(config):
     """grid_import + solar + discharge == load + charge + grid_export (per slot, approx)."""
     periods = [
