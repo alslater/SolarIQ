@@ -1,5 +1,6 @@
 from datetime import date, datetime, timezone
 from unittest.mock import MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -66,7 +67,8 @@ def test_get_today_live_data_partial_slot_scales_by_elapsed_time(config):
     """
     today = date(2026, 5, 2)
     # 13:14 BST = 12:14 UTC (Europe/London is UTC+1 in May)
-    fake_now = datetime(2026, 5, 2, 12, 14, 0, tzinfo=timezone.utc)
+    tz = ZoneInfo("Europe/London")
+    fake_now = datetime(2026, 5, 2, 13, 14, 0, tzinfo=tz)
 
     mock_points = [
         # slot 24 (12:00 BST = 11:00 UTC) — completed
@@ -81,7 +83,7 @@ def test_get_today_live_data_partial_slot_scales_by_elapsed_time(config):
          patch("solariq.data.influx.fetch_agile_prices", return_value=[15.0] * 48), \
          patch("solariq.data.octopus.fetch_export_prices", return_value=[5.0] * 48), \
          patch("solariq.data.influx.datetime") as mock_dt:
-        mock_dt.now.return_value = fake_now.astimezone()
+        mock_dt.now.return_value = fake_now
         mock_dt.fromisoformat.side_effect = datetime.fromisoformat
         result = get_today_live_data(config, today=today)
 
