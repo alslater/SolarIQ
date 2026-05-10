@@ -234,7 +234,6 @@ def index() -> rx.Component:
 
 
 app = rx.App(
-    theme=rx.theme(appearance="dark", accent_color="cyan"),
     stylesheets=["compli.css"],
     toaster=rx.toast.provider(position="top-right"),
     head_components=[

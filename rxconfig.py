@@ -5,5 +5,6 @@ config = rx.Config(
     port=3002,
     show_built_with_reflex=False,
     stylesheets=["compli.css"],
-    disable_plugins=[rx.plugins.SitemapPlugin]
+    disable_plugins=[rx.plugins.SitemapPlugin],
+    plugins=[rx.plugins.RadixThemesPlugin(theme=rx.theme(appearance="dark", accent_color="cyan"))],
 )
