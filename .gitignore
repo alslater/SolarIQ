@@ -227,7 +227,7 @@ Pipfile
 # SolarIQ
 solariq.ini
 cache/
-data/
+/data
 .web/
 .superpowers/
 .claude/settings.local.json

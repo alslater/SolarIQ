@@ -126,8 +126,8 @@ def test_solar_saving_gbp_present_in_all_rows(config):
 
 
 def test_avg_rate_correct_for_two_slots(config):
-    """avg_import_rate_p and avg_export_rate_p are simple means across slots in the bucket."""
-    # UTC 11:00 and 11:30 on 2026-04-01 = BST 12:00 and 12:30 → same hourly bucket (12)
+    """avg_import_rate_p and avg_export_rate_p reflect the rate for each individual 30m slot."""
+    # UTC 11:00 and 11:30 on 2026-04-01 = BST 12:00 and 12:30 → two separate slot buckets
     solax_points = [
         _make_solax_point("2026-04-01", 11, 0, power_in=1.0),
         _make_solax_point("2026-04-01", 11, 30, power_in=1.0),
@@ -152,9 +152,12 @@ def test_avg_rate_correct_for_two_slots(config):
     ):
         rows = get_historical_range_data(config, start_date=date(2026, 4, 1), end_date=date(2026, 4, 1))
 
-    bucket = next(r for r in rows if r.get("avg_import_rate_p") is not None)
-    assert bucket["avg_import_rate_p"] == pytest.approx(20.0, abs=0.001)
-    assert bucket["avg_export_rate_p"] == pytest.approx(6.0, abs=0.001)
+    rated_rows = [r for r in rows if r.get("avg_import_rate_p") is not None]
+    assert len(rated_rows) == 2
+    rates = sorted(r["avg_import_rate_p"] for r in rated_rows)
+    assert rates == pytest.approx([10.0, 30.0], abs=0.001)
+    export_rates = sorted(r["avg_export_rate_p"] for r in rated_rows)
+    assert export_rates == pytest.approx([4.0, 8.0], abs=0.001)
 
 
 def test_avg_rate_none_when_no_rate_data(config):
@@ -181,8 +184,8 @@ def test_avg_rate_none_when_no_rate_data(config):
 
 
 def test_avg_rate_includes_zero_and_negative_rates(config):
-    """Zero and negative Agile rates must be included in the average, not treated as missing."""
-    # Slots: -5p and 5p → average 0p (not dropped)
+    """Zero and negative Agile rates must appear in per-slot buckets, not be treated as missing."""
+    # Slots: -5p and 5p → two separate 30m buckets, each with their own rate
     solax_points = [
         _make_solax_point("2026-04-01", 11, 0, power_in=1.0),
         _make_solax_point("2026-04-01", 11, 30, power_in=1.0),
@@ -207,9 +210,15 @@ def test_avg_rate_includes_zero_and_negative_rates(config):
     ):
         rows = get_historical_range_data(config, start_date=date(2026, 4, 1), end_date=date(2026, 4, 1))
 
-    bucket = next(r for r in rows if r.get("avg_import_rate_p") is not None)
-    assert bucket["avg_import_rate_p"] == pytest.approx(0.0, abs=0.001)
-    assert bucket["avg_export_rate_p"] == pytest.approx(0.0, abs=0.001)
+    rated_rows = [r for r in rows if r.get("avg_import_rate_p") is not None]
+    assert len(rated_rows) == 2
+    rates = sorted(r["avg_import_rate_p"] for r in rated_rows)
+    assert rates == pytest.approx([-5.0, 5.0], abs=0.001)
+    # export_rate is 0.0 for both slots — must be retained, not treated as missing
+    export_rated_rows = [r for r in rows if r.get("avg_export_rate_p") is not None]
+    assert len(export_rated_rows) == 2
+    export_rates = sorted(r["avg_export_rate_p"] for r in export_rated_rows)
+    assert export_rates == pytest.approx([0.0, 0.0], abs=0.001)
 
 
 def test_avg_rate_present_in_all_rows(config):
