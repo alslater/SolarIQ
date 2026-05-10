@@ -23,9 +23,17 @@ def test_mae_constant_error():
     assert _mae(actual, forecast) == pytest.approx(1.0)
 
 def test_mae_mixed_errors():
+    # zero-actual slot is excluded; only slots 1 and 2 count
+    # errors: slot1=|1-1|=0, slot2=|1-2|=1 → mean over 2 daylight slots = 0.5
     actual =   [0.0, 1.0, 2.0]
     forecast = [1.0, 1.0, 1.0]
-    assert _mae(actual, forecast) == pytest.approx(2.0 / 3.0, rel=1e-6)
+    assert _mae(actual, forecast) == pytest.approx(0.5, rel=1e-6)
+
+def test_mae_zero_actual_slots_excluded():
+    # night slots (actual=0) don't contribute even if forecast is wrong
+    actual =   [0.0, 0.0, 1.0]
+    forecast = [5.0, 5.0, 1.0]
+    assert _mae(actual, forecast) == pytest.approx(0.0)
 
 def test_rmse_perfect_forecast():
     actual = [1.0, 2.0, 3.0]
@@ -33,15 +41,19 @@ def test_rmse_perfect_forecast():
     assert _rmse(actual, forecast) == pytest.approx(0.0)
 
 def test_rmse_constant_error():
-    actual = [0.0, 0.0, 0.0]
-    forecast = [2.0, 2.0, 2.0]
+    # only non-zero actual slots scored; all-zero actual → returns 0.0
+    actual = [1.0, 1.0, 1.0]
+    forecast = [3.0, 3.0, 3.0]
     assert _rmse(actual, forecast) == pytest.approx(2.0)
 
 def test_rmse_penalises_large_errors():
-    actual =   [0.0, 0.0, 0.0, 0.0]
-    forecast = [4.0, 0.0, 0.0, 0.0]
+    # only slot 0 has non-zero actual; error = |2-1| = 1 → RMSE = 1, MAE = 1
+    # use unequal errors to show RMSE > MAE: actual=[1,1], forecast=[3,1]
+    # errors: 2, 0 → MAE=1.0, RMSE=sqrt(2)
+    actual =   [1.0, 1.0]
+    forecast = [3.0, 1.0]
     assert _mae(actual, forecast) == pytest.approx(1.0)
-    assert _rmse(actual, forecast) == pytest.approx(2.0)
+    assert _rmse(actual, forecast) == pytest.approx(math.sqrt(2.0))
     assert _rmse(actual, forecast) > _mae(actual, forecast)
 
 
@@ -91,10 +103,11 @@ def test_compute_daily_accuracy_computes_metrics():
     assert result.actual_slots == actual
     assert result.solcast_slots == solcast
     assert result.forecast_solar_slots == fs
-    expected_mae = (8 * 0.5) / 48
+    # only the 8 non-zero actual slots are scored; error per slot = 0.5
+    expected_mae = 0.5
     assert result.solcast_mae == pytest.approx(expected_mae, rel=1e-6)
     assert result.forecast_solar_mae == pytest.approx(expected_mae, rel=1e-6)
-    expected_rmse = math.sqrt((8 * 0.25) / 48)
+    expected_rmse = math.sqrt(0.25)  # sqrt(mean([0.25]*8)) = sqrt(0.25) = 0.5
     assert result.solcast_rmse == pytest.approx(expected_rmse, rel=1e-6)
     assert result.forecast_solar_rmse == pytest.approx(expected_rmse, rel=1e-6)
 

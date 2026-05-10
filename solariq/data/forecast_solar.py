@@ -1,5 +1,5 @@
 import logging
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 import requests
@@ -66,11 +66,12 @@ def _extract_series(payload: dict) -> tuple[dict, str]:
 
 
 def _parse_datetime(raw: str, tz_name: str) -> datetime:
-    # Handle both RFC3339 and forecast.solar style keys.
+    # Handle both RFC3339 ("Z" suffix) and bare datetime strings.
+    # We request time=utc, so naive strings are treated as UTC — not local time.
     ts = raw.replace("Z", "+00:00")
     dt = datetime.fromisoformat(ts)
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=ZoneInfo(tz_name))
+        dt = dt.replace(tzinfo=timezone.utc)
     return dt.astimezone(ZoneInfo(tz_name))
 
 
@@ -133,11 +134,15 @@ def fetch_forecast_solar_with_coverage(
     tz_name = config.app.timezone
 
     parsed_points: list[tuple[datetime, float]] = []
+    skipped_parse = 0
     for ts, value in series.items():
         try:
             parsed_points.append((_parse_datetime(str(ts), tz_name), float(value or 0.0)))
-        except Exception:
-            pass
+        except Exception as exc:
+            skipped_parse += 1
+            logger.debug("forecast.solar: skipping unparseable point key=%r value=%r: %s", ts, value, exc)
+    if skipped_parse:
+        logger.warning("forecast.solar for %s: skipped %d unparseable point(s)", target_date, skipped_parse)
     parsed_points.sort(key=lambda p: p[0])
 
     # forecast.solar timestamps are end-of-period markers.
@@ -189,8 +194,8 @@ def fetch_forecast_solar_with_coverage(
                     continue
                 slots[slot] += energy_per_slot
                 covered_slots.add(slot)
-        except Exception:
-            continue
+        except Exception as exc:
+            logger.warning("forecast.solar for %s: skipping point end_dt=%r value=%r: %s", target_date, end_dt, numeric, exc)
 
     logger.info(
         "forecast.solar for %s: %d/48 slots, total %.2f kWh",

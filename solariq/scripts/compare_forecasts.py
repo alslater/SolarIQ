@@ -20,9 +20,15 @@ def _parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     date_group = parser.add_mutually_exclusive_group()
+    def positive_int(value: str) -> int:
+        n = int(value)
+        if n < 1:
+            raise argparse.ArgumentTypeError(f"--days must be at least 1, got {n}")
+        return n
+
     date_group.add_argument(
         "--days",
-        type=int,
+        type=positive_int,
         default=7,
         metavar="N",
         help="Compare the last N complete days (default: 7).",
@@ -56,8 +62,6 @@ def _parse_args() -> argparse.Namespace:
 
     if (args.start is None) != (args.end is None):
         parser.error("--start and --end must be used together.")
-    if args.start and args.days != 7:
-        parser.error("--days cannot be used with --start/--end.")
 
     return args
 
@@ -87,6 +91,7 @@ def _slot_time(slot: int) -> str:
 
 def _print_terminal(results: list, detail: bool) -> None:
     from tabulate import tabulate
+    from solariq.data.forecast_accuracy import overall_mae, overall_rmse
 
     summary_rows = []
     for r in results:
@@ -115,10 +120,10 @@ def _print_terminal(results: list, detail: bool) -> None:
     overall_actual = sum(sum(r.actual_slots) for r in results)
     overall_sc_kwh = sum(sum(r.solcast_slots) for r in results)
     overall_fs_kwh = sum(sum(r.forecast_solar_slots) for r in results)
-    overall_sc_mae = sum(r.solcast_mae for r in results) / len(results)
-    overall_sc_rmse = sum(r.solcast_rmse for r in results) / len(results)
-    overall_fs_mae = sum(r.forecast_solar_mae for r in results) / len(results)
-    overall_fs_rmse = sum(r.forecast_solar_rmse for r in results) / len(results)
+    overall_sc_mae = overall_mae(results, "solcast")
+    overall_sc_rmse = overall_rmse(results, "solcast")
+    overall_fs_mae = overall_mae(results, "forecast_solar")
+    overall_fs_rmse = overall_rmse(results, "forecast_solar")
 
     print("-" * 80)
     print(
@@ -157,6 +162,7 @@ def _print_terminal(results: list, detail: bool) -> None:
 def _write_excel(results: list, path: str) -> None:
     import openpyxl
     from openpyxl.styles import Font
+    from solariq.data.forecast_accuracy import overall_mae, overall_rmse
 
     wb = openpyxl.Workbook()
 
@@ -183,16 +189,15 @@ def _write_excel(results: list, path: str) -> None:
             round(r.forecast_solar_rmse, 6),
         ])
 
-    n = len(results)
     ws_summary.append([
         "Overall",
         round(sum(sum(r.actual_slots) for r in results), 4),
         round(sum(sum(r.solcast_slots) for r in results), 4),
-        round(sum(r.solcast_mae for r in results) / n, 6),
-        round(sum(r.solcast_rmse for r in results) / n, 6),
+        round(overall_mae(results, "solcast"), 6),
+        round(overall_rmse(results, "solcast"), 6),
         round(sum(sum(r.forecast_solar_slots) for r in results), 4),
-        round(sum(r.forecast_solar_mae for r in results) / n, 6),
-        round(sum(r.forecast_solar_rmse for r in results) / n, 6),
+        round(overall_mae(results, "forecast_solar"), 6),
+        round(overall_rmse(results, "forecast_solar"), 6),
     ])
 
     ws_detail = wb.create_sheet("Detail")

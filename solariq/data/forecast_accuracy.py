@@ -25,12 +25,18 @@ class DayAccuracy:
 
 def _mae(actual: list[float], forecast: list[float]) -> float:
     assert len(actual) == len(forecast)
-    return sum(abs(f - a) for a, f in zip(actual, forecast)) / len(actual)
+    pairs = [(a, f) for a, f in zip(actual, forecast) if a > 0.0]
+    if not pairs:
+        return 0.0
+    return sum(abs(f - a) for a, f in pairs) / len(pairs)
 
 
 def _rmse(actual: list[float], forecast: list[float]) -> float:
     assert len(actual) == len(forecast)
-    return math.sqrt(sum((f - a) ** 2 for a, f in zip(actual, forecast)) / len(actual))
+    pairs = [(a, f) for a, f in zip(actual, forecast) if a > 0.0]
+    if not pairs:
+        return 0.0
+    return math.sqrt(sum((f - a) ** 2 for a, f in pairs) / len(pairs))
 
 
 def compute_daily_accuracy(config: SolarIQConfig, target: date) -> "DayAccuracy | None":
@@ -40,12 +46,12 @@ def compute_daily_accuracy(config: SolarIQConfig, target: date) -> "DayAccuracy 
         return None
 
     solcast = load_solar_forecast_influx(config, target, source="solcast")
-    if solcast is None:
+    if solcast is None or all(v == 0.0 for v in solcast):
         logger.warning("no Solcast forecast for %s, skipping", target)
         return None
 
     fs = load_solar_forecast_influx(config, target, source="forecast_solar")
-    if fs is None:
+    if fs is None or all(v == 0.0 for v in fs):
         logger.warning("no forecast.solar forecast for %s, skipping", target)
         return None
 
@@ -59,6 +65,28 @@ def compute_daily_accuracy(config: SolarIQConfig, target: date) -> "DayAccuracy 
         forecast_solar_mae=_mae(actual, fs),
         forecast_solar_rmse=_rmse(actual, fs),
     )
+
+
+def overall_mae(results: list[DayAccuracy], source: str) -> float:
+    """True MAE across all daylight slots in the result set."""
+    if source == "solcast":
+        pairs = [(a, f) for r in results for a, f in zip(r.actual_slots, r.solcast_slots) if a > 0.0]
+    else:
+        pairs = [(a, f) for r in results for a, f in zip(r.actual_slots, r.forecast_solar_slots) if a > 0.0]
+    if not pairs:
+        return 0.0
+    return sum(abs(f - a) for a, f in pairs) / len(pairs)
+
+
+def overall_rmse(results: list[DayAccuracy], source: str) -> float:
+    """True RMSE across all daylight slots in the result set (single sqrt over pooled MSE)."""
+    if source == "solcast":
+        pairs = [(a, f) for r in results for a, f in zip(r.actual_slots, r.solcast_slots) if a > 0.0]
+    else:
+        pairs = [(a, f) for r in results for a, f in zip(r.actual_slots, r.forecast_solar_slots) if a > 0.0]
+    if not pairs:
+        return 0.0
+    return math.sqrt(sum((f - a) ** 2 for a, f in pairs) / len(pairs))
 
 
 def compute_range_accuracy(
