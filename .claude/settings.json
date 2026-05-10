@@ -2,7 +2,8 @@
   "permissions": {
     "allow": [
       "Bash(uv run *)",
-      "Bash(/home/aslate/.local/bin/uv run *)"
+      "Bash(/home/aslate/.local/bin/uv run *)",
+      "Read(//home/aslate/.claude/plugins/cache/claude-plugins-official/superpowers/5.1.0/skills/subagent-driven-development/**)"
     ],
     "additionalDirectories": [
       "/home/aslate/dev/SolarIQ/docs/superpowers/specs"
