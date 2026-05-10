@@ -1363,18 +1363,30 @@ class AppState(AuthState):
             # arrays directly gives slot 0 = 00:00 .. slot 47 = 23:30.
             tz = ZoneInfo(config.app.timezone)
             tomorrow = _tomorrow(config)
+            today = datetime.now(tz).date()
             settings = get_forecast_settings(config.app.auth_db_path)
+            test_mode = config.app.test_strategy_mode
 
             try:
                 agile_tmrw = await asyncio.to_thread(fetch_agile_prices, config, tomorrow)
-                export_tmrw = await asyncio.to_thread(fetch_export_prices, config, tomorrow)
+                # In test mode substitute today's rates (mirroring refresh_strategy behaviour)
+                if test_mode:
+                    agile_price_src = fill_unpublished_slots(
+                        await asyncio.to_thread(fetch_agile_prices, config, today)
+                    )
+                    export_price_src = fill_unpublished_slots(
+                        await asyncio.to_thread(fetch_export_prices, config, today)
+                    )
+                else:
+                    agile_price_src = agile_tmrw
+                    export_price_src = await asyncio.to_thread(fetch_export_prices, config, tomorrow)
             except Exception as exc:
                 async with self:
                     self.evaluation_error = f"Could not fetch tomorrow's prices: {exc}"
                     self.evaluation_loading = False
                 return
 
-            if not _prices_published(agile_tmrw):
+            if not test_mode and not _prices_published(agile_tmrw):
                 async with self:
                     self.evaluation_error = "Tomorrow's Agile prices aren't published yet — try after 16:00."
                     self.evaluation_loading = False
@@ -1396,8 +1408,8 @@ class AppState(AuthState):
             load_tmrw = await asyncio.to_thread(build_load_profile, config, tomorrow)
 
             # Normalise to exactly 48 slots
-            agile_48 = (list(agile_tmrw) + [0.0] * 48)[:48]
-            export_48 = (list(export_tmrw) + [0.0] * 48)[:48]
+            agile_48 = (list(agile_price_src) + [0.0] * 48)[:48]
+            export_48 = (list(export_price_src) + [0.0] * 48)[:48]
             solar_48 = (list(solar_tmrw) + [0.0] * 48)[:48]
             load_48 = (list(load_tmrw) + [0.0] * 48)[:48]
 

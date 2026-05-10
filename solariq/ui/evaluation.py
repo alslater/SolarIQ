@@ -183,7 +183,7 @@ def _schedule_editor() -> rx.Component:
     return rx.vstack(
         _section_heading("Schedule"),
         rx.cond(
-            AppState.evaluation_periods,
+            AppState.evaluation_periods.length() > 0,
             rx.table.root(
                 rx.table.header(
                     rx.table.row(

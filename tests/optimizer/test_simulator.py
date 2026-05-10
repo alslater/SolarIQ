@@ -293,6 +293,7 @@ def test_simulate_charge_mode_exports_excess_solar(config):
 def test_validate_rejects_invalid_start_slot():
     periods = [UserPeriod("00:00", "24:00", "Self Use")]
     assert validate_periods(periods, start_slot=-1) is not None
+    assert validate_periods(periods, start_slot=48) is not None
     assert validate_periods(periods, start_slot=49) is not None
 
 
