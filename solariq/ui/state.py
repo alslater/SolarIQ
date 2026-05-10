@@ -1158,7 +1158,7 @@ class AppState(AuthState):
                 "end_time": "24:00",
                 "mode": "Self Use",
                 "target_soc_pct": 100,
-                "max_charge_kw": 3.6,
+                "max_charge_kw": _get_config().battery.max_charge_kw,
                 "min_soc_pct": 10,
             }]
             self.evaluation_period_errors = [{"start_time": "", "end_time": ""}]
@@ -1169,7 +1169,7 @@ class AppState(AuthState):
                 "end_time": "24:00",
                 "mode": "Self Use",
                 "target_soc_pct": 100,
-                "max_charge_kw": 3.6,
+                "max_charge_kw": _get_config().battery.max_charge_kw,
                 "min_soc_pct": 10,
             }]
             self.evaluation_period_errors = self.evaluation_period_errors + [{"start_time": "", "end_time": ""}]
@@ -1227,7 +1227,7 @@ class AppState(AuthState):
                 "end_time": "24:00",
                 "mode": "Self Use",
                 "target_soc_pct": 100,
-                "max_charge_kw": 3.6,
+                "max_charge_kw": _get_config().battery.max_charge_kw,
                 "min_soc_pct": 10,
             }]
         else:
