@@ -29,6 +29,31 @@ class StrategyPeriod:
 
 
 @dataclass
+class UserPeriod:
+    start_time: str          # "HH:MM" — 00:00 to 23:30
+    end_time: str            # "HH:MM" — 00:30 to 24:00
+    mode: Literal["Charge", "Self Use"]
+    target_soc_pct: int = 100   # Charge only — 0-100
+    max_charge_kw: float = 3.6  # Charge only
+    min_soc_pct: int = 10       # Self Use only — 0-100
+
+
+@dataclass
+class EvaluationResult:
+    estimated_cost_gbp: float
+    solar_forecast_kwh: float
+    grid_import_kwh: float
+    grid_export_kwh: float
+    battery_soc_forecast: list[float]    # 48 x kWh
+    grid_import_forecast: list[float]    # 48 x kWh
+    grid_export_forecast: list[float]    # 48 x kWh
+    charge_mode_slots: list[bool]        # 48 x bool
+    agile_prices: list[float]            # 48 x p/kWh (for chart colouring)
+    export_prices: list[float]           # 48 x p/kWh
+    solar_forecast: list[float]          # 48 x kWh (for chart)
+
+
+@dataclass
 class OptimizationResult:
     periods: list[StrategyPeriod]
     estimated_cost_gbp: float

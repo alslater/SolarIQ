@@ -5,6 +5,7 @@ from solariq.ui.tomorrow import tomorrow_tab
 from solariq.ui.history import history_tab
 from solariq.ui.settings import settings_tab
 from solariq.ui.inverter import inverter_tab
+from solariq.ui.evaluation import evaluation_tab
 from solariq.ui.auth import auth_loading_view, bootstrap_view, login_view
 from solariq.ui import theme as t
 
@@ -96,6 +97,7 @@ def _sidebar() -> rx.Component:
             _nav_item("History", "chart-line", "history"),
             _nav_item("Inverter", "cpu", "inverter"),
             _nav_item("Charging Strategy", "battery-charging", "tomorrow"),
+            _nav_item("Evaluation", "flask-conical", "evaluation"),
             _nav_item("Settings", "settings", "settings"),
             spacing="1",
             padding_top="12px",
@@ -200,7 +202,11 @@ def index() -> rx.Component:
                                         rx.cond(
                                             AppState.current_page == "inverter",
                                             inverter_tab(),
-                                            settings_tab(),
+                                            rx.cond(
+                                                AppState.current_page == "evaluation",
+                                                evaluation_tab(),
+                                                settings_tab(),
+                                            ),
                                         ),
                                     ),
                                 ),

@@ -26,13 +26,16 @@ from solariq.cache import (
     save_strategy,
 )
 from solariq.config import SolarIQConfig
-from solariq.data.influx import get_today_live_data, get_historical_range_data, get_latest_inverter_stats
+from solariq.data.influx import get_today_live_data, get_historical_range_data, get_latest_inverter_stats, load_solar_forecast_influx
 from solariq.data.forecast_solar import fetch_forecast_solar
 from solariq.data.load_profile import build_load_profile
 from solariq.data.octopus import UNPUBLISHED_RATE_CAP_P, fetch_agile_prices, fetch_export_prices, fetch_standing_charge_p_per_day, fetch_total_standing_charge_gbp, fill_unpublished_slots
 from solariq.data.solcast import fetch_solar_forecast
 from solariq.data.weather import fetch_today_weather
+from solariq.optimizer.simulator import simulate, validate_periods
 from solariq.optimizer.solver import solve
+from solariq.optimizer.strategy import build_rolling_window, current_window_start
+from solariq.optimizer.types import UserPeriod
 from solariq.ui.auth_state import AuthState
 from solariq.ui.state_common import get_config as _get_config
 
@@ -82,6 +85,15 @@ class _TodayDirectResult:
     current_export_rate_p: float
     chart_data: list
     price_data: list
+
+
+@dataclass
+class _TodayForecast:
+    agile_prices: list
+    export_prices: list
+    solar_forecast: list
+    load_forecast: list
+    battery_soc_forecast: list
 
 
 async def _fetch_today_direct(
@@ -218,6 +230,22 @@ class AppState(AuthState):
     show_self_use_explicit: bool = True
     show_charge: bool = True
     sort_strategy_by_time: bool = False
+
+    # Evaluation page
+    evaluation_periods: list[dict] = []
+    evaluation_period_errors: list[dict] = []  # per-period {field: error_message}
+    evaluation_loading: bool = False
+    evaluation_error: str = ""
+    evaluation_has_result: bool = False
+    evaluation_result_cost: float = 0.0
+    evaluation_solar_kwh: float = 0.0
+    evaluation_grid_import_kwh: float = 0.0
+    evaluation_price_data: list[dict] = []
+    evaluation_solar_data: list[dict] = []
+    evaluation_reference_price_data: list[dict] = []  # raw import/export rates for the pre-simulate chart
+    evaluation_today_mode: bool = False
+    evaluation_current_slot: int = 0
+    evaluation_current_slot_time: str = ""
 
     # Tomorrow charts
     tomorrow_price_data: list[dict] = []
@@ -1023,6 +1051,7 @@ class AppState(AuthState):
                 {
                     "time": timestamps[t],
                     "price": price,
+                    "export": result.export_prices[t],
                     "mode": mode_label,
                     "price_charge": price if mode_label == "Charge" else 0.0,
                     "price_self_use_explicit": price if mode_label == "Self Use (Explicit)" else 0.0,
@@ -1051,6 +1080,39 @@ class AppState(AuthState):
     @rx.var
     def test_strategy_mode(self) -> bool:
         return _get_config().app.test_strategy_mode
+
+    @rx.var
+    def evaluation_can_add_period(self) -> bool:
+        if len(self.evaluation_periods) >= 10:
+            return False
+        if not self.evaluation_periods:
+            return True
+        if self.evaluation_periods[-1].get("end_time") == "24:00":
+            return False
+        # Also block if the last period has a time validation error
+        idx = len(self.evaluation_periods) - 1
+        if len(self.evaluation_period_errors) > idx:
+            if self.evaluation_period_errors[idx].get("end_time"):
+                return False
+        return True
+
+    @rx.var
+    def evaluation_agile_chart_data(self) -> list[dict]:
+        """Agile import and export prices for the reference chart above the schedule editor.
+
+        Populated from evaluation_reference_price_data (written by evaluate_schedule). In Today
+        mode, falls back to today_price_data (also midnight-based). Tomorrow mode has no fallback
+        because tomorrow_price_data uses rolling-window timestamps that don't align with the
+        midnight-based schedule editor times.
+        """
+        if self.evaluation_reference_price_data:
+            return self.evaluation_reference_price_data
+        if self.evaluation_today_mode:
+            return [
+                {"time": row["time"], "import": row.get("import", 0.0), "export": row.get("export", 0.0)}
+                for row in self.today_price_data
+            ]
+        return []
 
     @rx.var
     def filtered_strategy_periods(self) -> list[dict]:
@@ -1088,6 +1150,341 @@ class AppState(AuthState):
     def toggle_sort_strategy_by_time(self):
         self.sort_strategy_by_time = not self.sort_strategy_by_time
 
+    @rx.event
+    def add_evaluation_period(self):
+        default_start = self.evaluation_current_slot_time if self.evaluation_today_mode else "00:00"
+        if not self.evaluation_periods:
+            self.evaluation_periods = [{
+                "start_time": default_start,
+                "end_time": "24:00",
+                "mode": "Self Use",
+                "target_soc_pct": 100,
+                "max_charge_kw": _get_config().battery.max_charge_kw,
+                "min_soc_pct": 10,
+            }]
+            self.evaluation_period_errors = [{"start_time": "", "end_time": ""}]
+        else:
+            last = self.evaluation_periods[-1]
+            self.evaluation_periods = self.evaluation_periods + [{
+                "start_time": last["end_time"],
+                "end_time": "24:00",
+                "mode": "Self Use",
+                "target_soc_pct": 100,
+                "max_charge_kw": _get_config().battery.max_charge_kw,
+                "min_soc_pct": 10,
+            }]
+            self.evaluation_period_errors = self.evaluation_period_errors + [{"start_time": "", "end_time": ""}]
+
+    @rx.event
+    def update_evaluation_period(self, index: int, field: str, value):
+        updated = list(self.evaluation_periods)
+        updated[index] = {**updated[index], field: value}
+        self.evaluation_periods = updated
+        # Clear the error for this field as the user is typing
+        errors = list(self.evaluation_period_errors)
+        while len(errors) <= index:
+            errors.append({"start_time": "", "end_time": ""})
+        errors[index] = {**errors[index], field: ""}
+        self.evaluation_period_errors = errors
+
+    @rx.event
+    def validate_evaluation_period_time(self, index: int, field: str, value: str):
+        """Called on blur — validates that a time field is a valid 30-min boundary."""
+        from solariq.optimizer.simulator import is_slot_boundary
+        errors = list(self.evaluation_period_errors)
+        while len(errors) <= index:
+            errors.append({"start_time": "", "end_time": ""})
+        if value and not is_slot_boundary(value):
+            errors[index] = {**errors[index], field: f"{value!r} must be HH:00 or HH:30"}
+        else:
+            errors[index] = {**errors[index], field: ""}
+        self.evaluation_period_errors = errors
+
+    @rx.event
+    def remove_evaluation_period(self, index: int):
+        self.evaluation_periods = [
+            p for i, p in enumerate(self.evaluation_periods) if i != index
+        ]
+        self.evaluation_period_errors = [
+            e for i, e in enumerate(self.evaluation_period_errors) if i != index
+        ]
+
+    @rx.event
+    def toggle_evaluation_today_mode(self):
+        config = _get_config()
+        self.evaluation_today_mode = not self.evaluation_today_mode
+        self.evaluation_has_result = False
+        self.evaluation_error = ""
+        self.evaluation_reference_price_data = []
+        self.evaluation_period_errors = []
+        if self.evaluation_today_mode:
+            slot, _ = current_window_start(config.app.timezone)
+            self.evaluation_current_slot = slot
+            h = (slot * 30) // 60
+            m = (slot * 30) % 60
+            self.evaluation_current_slot_time = f"{h:02d}:{m:02d}"
+            self.evaluation_periods = [{
+                "start_time": self.evaluation_current_slot_time,
+                "end_time": "24:00",
+                "mode": "Self Use",
+                "target_soc_pct": 100,
+                "max_charge_kw": _get_config().battery.max_charge_kw,
+                "min_soc_pct": 10,
+            }]
+        else:
+            self.evaluation_periods = []
+            self.evaluation_current_slot = 0
+            self.evaluation_current_slot_time = ""
+
+    @rx.event(background=True)
+    async def evaluate_schedule(self):
+        async with self:
+            self.evaluation_loading = True
+            self.evaluation_error = ""
+            self.evaluation_has_result = False
+
+        config = _get_config()
+        today_mode = self.evaluation_today_mode
+        current_slot = self.evaluation_current_slot
+
+        try:
+            periods = []
+            for p in self.evaluation_periods:
+                mode = p["mode"]
+                if mode == "Charge":
+                    target_soc_pct = int(p.get("target_soc_pct", 100))
+                    max_charge_kw = float(p.get("max_charge_kw", config.battery.max_charge_kw))
+                    min_soc_pct = config.battery.min_soc_pct
+                else:
+                    target_soc_pct = 100
+                    max_charge_kw = config.battery.max_charge_kw
+                    min_soc_pct = int(p.get("min_soc_pct", config.battery.min_soc_pct))
+                periods.append(UserPeriod(
+                    start_time=p["start_time"],
+                    end_time=p["end_time"],
+                    mode=mode,
+                    target_soc_pct=target_soc_pct,
+                    max_charge_kw=max_charge_kw,
+                    min_soc_pct=min_soc_pct,
+                ))
+            error = validate_periods(periods, start_slot=current_slot if today_mode else 0, battery=config.battery)
+        except Exception as exc:
+            async with self:
+                self.evaluation_error = f"Invalid period input: {exc}"
+                self.evaluation_loading = False
+            return
+
+        if error:
+            async with self:
+                self.evaluation_error = error
+                self.evaluation_loading = False
+            return
+
+        if today_mode:
+            # Build forecast from today's actuals + today's solar forecast
+            snapshot = await asyncio.to_thread(load_today_snapshot)
+            if snapshot is None or snapshot.get("error"):
+                # Worker not running — fetch live data directly as fallback
+                try:
+                    tz = ZoneInfo(config.app.timezone)
+                    today_local = datetime.now(tz).date()
+                    direct = await _fetch_today_direct(config, today_local)
+                    chart_data = direct.chart_data
+                    price_data_snap = direct.price_data
+                    battery_soc_kwh = direct.battery_soc_kwh
+                except Exception as exc:
+                    async with self:
+                        self.evaluation_error = f"Could not load today data: {exc}"
+                        self.evaluation_loading = False
+                    return
+            else:
+                chart_data = snapshot.get("chart_data", [])
+                price_data_snap = snapshot.get("price_data", [])
+                battery_soc_kwh = snapshot.get("battery_soc_kwh", 0.0)
+
+            # Extract per-slot arrays from chart_data (always exactly 48 entries)
+            actual_solar_raw = [row.get("solar", 0.0) or 0.0 for row in chart_data]
+            # actual_usage = grid_import + solar - grid_export (energy balance)
+            actual_usage_raw = [
+                (row.get("grid_import", 0.0) or 0.0)
+                + (row.get("solar", 0.0) or 0.0)
+                - (row.get("grid_export", 0.0) or 0.0)
+                for row in chart_data
+            ]
+            predicted_usage_raw = [row.get("predicted_usage", 0.0) or 0.0 for row in chart_data]
+            agile_prices_raw = [row.get("import", 0.0) or 0.0 for row in price_data_snap]
+            export_prices_raw = [row.get("export", 0.0) or 0.0 for row in price_data_snap]
+            timestamps_raw = [row.get("time", f"{(i * 30) // 60:02d}:{(i * 30) % 60:02d}") for i, row in enumerate(chart_data)]
+
+            # Load today's solar forecast from InfluxDB
+            tz = ZoneInfo(config.app.timezone)
+            today_date = datetime.now(tz).date()
+            settings = get_forecast_settings(config.app.auth_db_path)
+
+            solar_forecast_today = None
+            if settings.collect_solcast:
+                solar_forecast_today = await asyncio.to_thread(
+                    load_solar_forecast_influx, config, today_date, source="solcast"
+                )
+            if solar_forecast_today is None and settings.collect_forecast_solar:
+                solar_forecast_today = await asyncio.to_thread(
+                    load_solar_forecast_influx, config, today_date, source="forecast_solar"
+                )
+            if solar_forecast_today is None:
+                solar_forecast_today = []
+
+            # Normalise all source lists to exactly 48 entries before stitching
+            actual_solar = (actual_solar_raw + [0.0] * 48)[:48]
+            actual_usage = (actual_usage_raw + [0.0] * 48)[:48]
+            predicted_usage = (predicted_usage_raw + [0.0] * 48)[:48]
+            solar_forecast_today = (solar_forecast_today + [0.0] * 48)[:48]
+            agile_prices = (agile_prices_raw + [0.0] * 48)[:48]
+            export_prices = (export_prices_raw + [0.0] * 48)[:48]
+            timestamps = (timestamps_raw + [f"{(i * 30) // 60:02d}:{(i * 30) % 60:02d}" for i in range(48)])[:48]
+
+            # Stitch: actuals for past slots, forecast for future
+            solar_48 = actual_solar[:current_slot] + solar_forecast_today[current_slot:]
+            load_48 = actual_usage[:current_slot] + predicted_usage[current_slot:]
+
+            # Battery SOC array: only index `current_slot` matters (used as initial SOC by simulate)
+            soc_48 = [0.0] * 48
+            soc_48[current_slot] = battery_soc_kwh
+
+            forecast = _TodayForecast(
+                agile_prices=agile_prices,
+                export_prices=export_prices,
+                solar_forecast=solar_48,
+                load_forecast=load_48,
+                battery_soc_forecast=soc_48,
+            )
+        else:
+            # Build a midnight-based forecast for tomorrow's calendar day.
+            # load_strategy() returns a rolling-window array starting at window_start
+            # (e.g. 16:00), so slot indices there don't match the midnight-based
+            # HH:MM times that validate_periods/_time_to_slot use. Fetching tomorrow's
+            # arrays directly gives slot 0 = 00:00 .. slot 47 = 23:30.
+            tz = ZoneInfo(config.app.timezone)
+            tomorrow = _tomorrow(config)
+            today = datetime.now(tz).date()
+            settings = get_forecast_settings(config.app.auth_db_path)
+            test_mode = config.app.test_strategy_mode
+
+            try:
+                agile_tmrw = await asyncio.to_thread(fetch_agile_prices, config, tomorrow)
+                # In test mode substitute today's rates (mirroring refresh_strategy behaviour)
+                if test_mode:
+                    agile_price_src = fill_unpublished_slots(
+                        await asyncio.to_thread(fetch_agile_prices, config, today)
+                    )
+                    export_price_src = fill_unpublished_slots(
+                        await asyncio.to_thread(fetch_export_prices, config, today)
+                    )
+                else:
+                    agile_price_src = agile_tmrw
+                    export_price_src = await asyncio.to_thread(fetch_export_prices, config, tomorrow)
+            except Exception as exc:
+                async with self:
+                    self.evaluation_error = f"Could not fetch tomorrow's prices: {exc}"
+                    self.evaluation_loading = False
+                return
+
+            if not test_mode and not _prices_published(agile_tmrw):
+                async with self:
+                    self.evaluation_error = "Tomorrow's Agile prices aren't published yet — try after 16:00."
+                    self.evaluation_loading = False
+                return
+
+            # Solar forecast: prefer cached Solcast, fall back to forecast.solar
+            solar_tmrw = None
+            if settings.collect_solcast:
+                solar_tmrw = await asyncio.to_thread(
+                    load_solar_forecast_influx, config, tomorrow, source="solcast"
+                )
+            if solar_tmrw is None and settings.collect_forecast_solar:
+                solar_tmrw = await asyncio.to_thread(
+                    load_solar_forecast_influx, config, tomorrow, source="forecast_solar"
+                )
+            if solar_tmrw is None:
+                solar_tmrw = [0.0] * 48
+
+            load_tmrw = await asyncio.to_thread(build_load_profile, config, tomorrow)
+
+            # Normalise to exactly 48 slots
+            agile_48 = (list(agile_price_src) + [0.0] * 48)[:48]
+            export_48 = (list(export_price_src) + [0.0] * 48)[:48]
+            solar_48 = (list(solar_tmrw) + [0.0] * 48)[:48]
+            load_48 = (list(load_tmrw) + [0.0] * 48)[:48]
+
+            # Use current battery SOC as initial SOC for tomorrow simulation
+            try:
+                today_data = await asyncio.to_thread(get_today_live_data, config)
+                initial_soc = today_data.battery_soc_kwh or (config.battery.capacity_kwh * 0.5)
+            except Exception:
+                initial_soc = config.battery.capacity_kwh * 0.5
+
+            soc_48 = [initial_soc] + [0.0] * 47
+
+            forecast = _TodayForecast(
+                agile_prices=agile_48,
+                export_prices=export_48,
+                solar_forecast=solar_48,
+                load_forecast=load_48,
+                battery_soc_forecast=soc_48,
+            )
+            timestamps = [
+                f"{(t * 30) // 60:02d}:{(t * 30) % 60:02d}" for t in range(48)
+            ]
+
+        try:
+            result = await asyncio.to_thread(
+                simulate, periods, forecast, config.battery,
+                current_slot if today_mode else 0
+            )
+        except Exception as exc:
+            async with self:
+                self.evaluation_error = str(exc)
+                self.evaluation_loading = False
+            return
+
+        capacity_kwh = config.battery.capacity_kwh
+
+        price_data = []
+        for t in range(48):
+            mode_label = "Charge" if result.charge_mode_slots[t] else "Self Use"
+            price = result.agile_prices[t]
+            price_data.append({
+                "time": timestamps[t],
+                "price": price,
+                "mode": mode_label,
+                "price_charge": price if mode_label == "Charge" else 0.0,
+                "price_self_use_explicit": price if mode_label == "Self Use" else 0.0,
+                "price_self_use_implicit": 0.0,
+            })
+
+        solar_data = [
+            {
+                "time": timestamps[t],
+                "solar": result.solar_forecast[t],
+                "soc_pct": round(result.battery_soc_forecast[t] / capacity_kwh * 100, 1) if capacity_kwh else 0.0,
+            }
+            for t in range(48)
+        ]
+
+        reference_price_data = [
+            {"time": timestamps[t], "import": result.agile_prices[t], "export": result.export_prices[t]}
+            for t in range(48)
+        ]
+
+        async with self:
+            self.evaluation_result_cost = round(result.estimated_cost_gbp, 2)
+            self.evaluation_solar_kwh = round(result.solar_forecast_kwh, 1)
+            self.evaluation_grid_import_kwh = round(result.grid_import_kwh, 1)
+            self.evaluation_price_data = price_data
+            self.evaluation_solar_data = solar_data
+            self.evaluation_reference_price_data = reference_price_data
+            self.evaluation_has_result = True
+            self.evaluation_loading = False
+
     @rx.event(background=True)
     async def refresh_strategy(self):
         async with self:
@@ -1118,8 +1515,7 @@ class AppState(AuthState):
             return
 
         try:
-            from solariq.data.influx import load_solar_forecast_influx, save_solar_forecast_influx
-            from solariq.optimizer.strategy import build_rolling_window, current_window_start
+            from solariq.data.influx import save_solar_forecast_influx
 
             current_slot, window_start = current_window_start(config.app.timezone)
             settings = get_forecast_settings(config.app.auth_db_path)
