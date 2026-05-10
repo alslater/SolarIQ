@@ -1,5 +1,5 @@
 import logging
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import requests
@@ -66,12 +66,12 @@ def _extract_series(payload: dict) -> tuple[dict, str]:
 
 
 def _parse_datetime(raw: str, tz_name: str) -> datetime:
-    # Handle both RFC3339 ("Z" suffix) and bare datetime strings.
-    # We request time=utc, so naive strings are treated as UTC — not local time.
+    # Handle both RFC3339 ("Z" suffix or explicit offset) and bare datetime strings.
+    # The public endpoint returns naive strings in local time regardless of time=utc.
     ts = raw.replace("Z", "+00:00")
     dt = datetime.fromisoformat(ts)
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=ZoneInfo(tz_name))
     return dt.astimezone(ZoneInfo(tz_name))
 
 
