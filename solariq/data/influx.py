@@ -157,9 +157,13 @@ def get_today_live_data(
     battery_soc_pct = 0.0
 
     now_local = datetime.now(tz)
-    current_slot = (now_local.hour * 60 + now_local.minute) // 30
-    # Minutes elapsed so far within the current in-progress slot (1..30)
-    elapsed_minutes = (now_local.hour * 60 + now_local.minute) % 30 or 30
+    if today == now_local.date():
+        current_slot = (now_local.hour * 60 + now_local.minute) // 30
+        # Minutes elapsed so far within the current in-progress slot (0..30)
+        elapsed_minutes = (now_local.hour * 60 + now_local.minute) % 30
+    else:
+        current_slot = -1
+        elapsed_minutes = 30
 
     for point in solax_points:
         t_str = point["time"]
