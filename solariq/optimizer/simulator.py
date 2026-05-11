@@ -218,6 +218,9 @@ def simulate_rolling(periods: list[UserPeriod], forecast, battery, current_slot:
     current_slot_time wrap to tomorrow. forecast arrays are already rolling-window ordered
     (index 0 = current_slot, index 47 = current_slot - 1 tomorrow).
     """
+    if not 0 <= current_slot < SLOTS:
+        raise ValueError(f"current_slot must be in 0..{SLOTS - 1} (got {current_slot}).")
+
     sorted_periods = sorted(periods, key=lambda p: _rolling_time_to_slot(p.start_time, current_slot))
 
     # Build a per-slot period map in rolling slot space (0-47), then rewrite as

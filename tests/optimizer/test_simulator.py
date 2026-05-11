@@ -723,6 +723,15 @@ def _make_rolling_forecast(
     )
 
 
+def test_simulate_rolling_raises_on_invalid_current_slot(config):
+    periods = [UserPeriod("16:30", "16:30", "Self Use")]
+    forecast = _make_rolling_forecast()
+    with pytest.raises(ValueError, match="current_slot"):
+        simulate_rolling(periods, forecast, config.battery, current_slot=-1)
+    with pytest.raises(ValueError, match="current_slot"):
+        simulate_rolling(periods, forecast, config.battery, current_slot=48)
+
+
 def test_simulate_rolling_returns_48_slots(config):
     periods = [UserPeriod("16:30", "16:30", "Self Use")]
     forecast = _make_rolling_forecast()
