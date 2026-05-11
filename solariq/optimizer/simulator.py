@@ -136,10 +136,14 @@ def validate_periods_rolling(periods: list[UserPeriod], current_slot: int, batte
     """Validate periods expressed in wall-clock HH:MM against a rolling window starting at current_slot.
 
     Times >= current_slot_time map to today; times < current_slot_time wrap to tomorrow.
-    The window must be covered contiguously from current_slot_time to current_slot_time (+48 slots).
-    '24:00' is NOT valid here — the end of the rolling window is expressed as the same HH:MM as the
-    start (e.g. '17:00' if current_slot is slot 34). Use the sentinel end_time '24:00' internally
-    to mean 'end of rolling window'.
+    The window must be covered contiguously across the full 48 rolling slots.
+
+    Valid end-of-window sentinels for the last period's end_time:
+      - '24:00'  — always accepted as end-of-window regardless of current_slot.
+      - current_slot_time (e.g. '17:00') — the same wall-clock time as the window start,
+        interpreted as that time tomorrow (rolling slot 48) when used as an end time.
+
+    '24:00' is NOT valid as a period start_time; use '00:00' for midnight.
     """
     if not 0 <= current_slot < SLOTS:
         return f"current_slot must be in 0..{SLOTS - 1} (got {current_slot})."
@@ -157,6 +161,12 @@ def validate_periods_rolling(periods: list[UserPeriod], current_slot: int, batte
             return f"Start time {p.start_time!r} must be on a 30-minute boundary (HH:00 or HH:30)."
         if not is_slot_boundary(p.end_time):
             return f"End time {p.end_time!r} must be on a 30-minute boundary (HH:00 or HH:30)."
+
+    for p in periods:
+        start = _rolling_time_to_slot(p.start_time, current_slot)
+        end = _rolling_time_to_slot(p.end_time, current_slot, as_end=True)
+        if start >= end:
+            return f"Period start ({p.start_time}) must be before end ({p.end_time}) in the rolling window."
 
     # Mode and SOC checks (same as validate_periods)
     valid_modes = {"Charge", "Self Use"}

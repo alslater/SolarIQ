@@ -260,6 +260,9 @@ def history_tab() -> rx.Component:
                             interval="preserveStartEnd",
                         ),
                         rx.recharts.y_axis(tick={"fill": t.CHART_MUTED, "fontSize": 10}),
+                        # Redundant right axis — no data uses it, but keeps the chart width
+                        # consistent with the Solar/Grid chart above which has a real right
+                        # axis for Battery SOC %. Without this, the plot areas misalign.
                         rx.recharts.y_axis(y_axis_id="right", orientation="right", tick={"fill": t.CHART_MUTED, "fontSize": 10}),
                         rx.recharts.legend(),
                         rx.recharts.tooltip(),
@@ -293,6 +296,9 @@ def history_tab() -> rx.Component:
                             interval="preserveStartEnd",
                         ),
                         rx.recharts.y_axis(tick={"fill": t.CHART_MUTED, "fontSize": 10}),
+                        # Redundant right axis — no data uses it, but keeps the chart width
+                        # consistent with the Solar/Grid chart above which has a real right
+                        # axis for Battery SOC %. Without this, the plot areas misalign.
                         rx.recharts.y_axis(y_axis_id="right", orientation="right", tick={"fill": t.CHART_MUTED, "fontSize": 10}),
                         rx.recharts.legend(),
                         rx.recharts.tooltip(),

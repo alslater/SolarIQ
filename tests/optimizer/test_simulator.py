@@ -1,7 +1,13 @@
 # tests/optimizer/test_simulator.py
 import pytest
 from solariq.config import load_config
-from solariq.optimizer.simulator import simulate, validate_periods
+from solariq.optimizer.simulator import (
+    simulate,
+    simulate_rolling,
+    validate_periods,
+    validate_periods_rolling,
+    _rolling_time_to_slot,
+)
 from solariq.optimizer.types import UserPeriod
 
 SLOTS = 48
@@ -514,3 +520,273 @@ def test_simulate_short_snapshot_arrays_padded(config):
 
     assert len(result.battery_soc_forecast) == SLOTS
     assert len(result.grid_import_forecast) == SLOTS
+
+
+# ---------------------------------------------------------------------------
+# _rolling_time_to_slot tests
+# ---------------------------------------------------------------------------
+
+# current_slot = 33 means 16:30
+_CS = 33
+
+
+def test_rolling_slot_time_after_current():
+    """Time after current_slot_time maps to slots > 0 (today portion)."""
+    # 17:00 is slot 34 absolute; relative to 16:30 (33) → 34 - 33 = 1
+    assert _rolling_time_to_slot("17:00", _CS) == 1
+
+
+def test_rolling_slot_time_before_current_wraps():
+    """Time before current_slot_time wraps to tomorrow portion."""
+    # 08:00 is slot 16 absolute; wraps → 16 + (48 - 33) = 31
+    assert _rolling_time_to_slot("08:00", _CS) == 31
+
+
+def test_rolling_slot_current_time_as_start_is_zero():
+    """current_slot_time used as a start maps to rolling slot 0."""
+    assert _rolling_time_to_slot("16:30", _CS) == 0
+
+
+def test_rolling_slot_current_time_as_end_is_48():
+    """current_slot_time used as an end (as_end=True) maps to rolling slot 48."""
+    assert _rolling_time_to_slot("16:30", _CS, as_end=True) == 48
+
+
+def test_rolling_slot_2400_always_48():
+    """'24:00' always maps to 48 regardless of as_end."""
+    assert _rolling_time_to_slot("24:00", _CS) == 48
+    assert _rolling_time_to_slot("24:00", _CS, as_end=True) == 48
+
+
+def test_rolling_slot_midnight_as_start():
+    """'00:00' (midnight) as a start wraps to tomorrow portion correctly."""
+    # 00:00 is slot 0; current_slot=33 → 0 < 33 → 0 + (48 - 33) = 15
+    assert _rolling_time_to_slot("00:00", _CS) == 15
+
+
+def test_rolling_slot_midnight_as_end():
+    """'00:00' as an end time (not the window-start sentinel) maps to the wrapped slot."""
+    # as_end=True; abs_slot 0 != current_slot 33 → same as non-end: 15
+    assert _rolling_time_to_slot("00:00", _CS, as_end=True) == 15
+
+
+def test_rolling_slot_zero_current_slot():
+    """current_slot=0 means window starts at midnight; any time is simply abs_slot."""
+    assert _rolling_time_to_slot("00:00", 0) == 0
+    assert _rolling_time_to_slot("00:00", 0, as_end=True) == 48  # sentinel
+    assert _rolling_time_to_slot("08:00", 0) == 16
+    assert _rolling_time_to_slot("23:30", 0) == 47
+
+
+# ---------------------------------------------------------------------------
+# validate_periods_rolling tests
+# ---------------------------------------------------------------------------
+
+def test_rolling_validate_accepts_single_full_window():
+    """A single period from current_slot_time to current_slot_time (tomorrow) is valid."""
+    # 16:30 → 16:30 tomorrow (rolling slot 0 → 48)
+    periods = [UserPeriod("16:30", "16:30", "Self Use")]
+    assert validate_periods_rolling(periods, current_slot=_CS) is None
+
+
+def test_rolling_validate_accepts_24_00_as_end_sentinel():
+    """'24:00' is a valid end-of-window sentinel for the last period."""
+    periods = [UserPeriod("16:30", "24:00", "Self Use")]
+    assert validate_periods_rolling(periods, current_slot=_CS) is None
+
+
+def test_rolling_validate_accepts_two_contiguous_periods_spanning_midnight():
+    """Two periods spanning midnight (16:30→00:00, 00:00→16:30) should be valid."""
+    periods = [
+        UserPeriod("16:30", "00:00", "Charge", max_charge_kw=3.6, target_soc_pct=80),
+        UserPeriod("00:00", "16:30", "Self Use"),
+    ]
+    assert validate_periods_rolling(periods, current_slot=_CS) is None
+
+
+def test_rolling_validate_rejects_24_00_as_start():
+    """'24:00' as a start time must be rejected with a clear message."""
+    periods = [UserPeriod("24:00", "16:30", "Self Use")]
+    error = validate_periods_rolling(periods, current_slot=_CS)
+    assert error is not None
+    assert "00:00" in error  # should hint to use 00:00 for midnight
+
+
+def test_rolling_validate_rejects_wrong_window_start():
+    """Periods that don't start at current_slot_time are rejected."""
+    # Starts at 17:00 instead of 16:30 — leaves a gap at the beginning
+    periods = [UserPeriod("17:00", "16:30", "Self Use")]
+    error = validate_periods_rolling(periods, current_slot=_CS)
+    assert error is not None
+    assert "16:30" in error
+
+
+def test_rolling_validate_rejects_wrong_window_end():
+    """Periods that don't end at current_slot_time (or 24:00) are rejected."""
+    # Ends at 16:00 — leaves a gap at the end
+    periods = [UserPeriod("16:30", "16:00", "Self Use")]
+    error = validate_periods_rolling(periods, current_slot=_CS)
+    assert error is not None
+
+
+def test_rolling_validate_rejects_gap():
+    periods = [
+        UserPeriod("16:30", "20:00", "Self Use"),
+        UserPeriod("21:00", "16:30", "Self Use"),
+    ]
+    error = validate_periods_rolling(periods, current_slot=_CS)
+    assert error is not None
+    assert "gap" in error.lower()
+
+
+def test_rolling_validate_rejects_overlap():
+    periods = [
+        UserPeriod("16:30", "21:00", "Self Use"),
+        UserPeriod("20:00", "16:30", "Self Use"),
+    ]
+    error = validate_periods_rolling(periods, current_slot=_CS)
+    assert error is not None
+    assert "overlap" in error.lower()
+
+
+def test_rolling_validate_rejects_zero_duration():
+    """A period where start == end in rolling slot space must be rejected."""
+    # 17:00 → 17:00 maps to rolling slot 1 → 1 (zero duration in the window)
+    periods = [
+        UserPeriod("16:30", "17:00", "Self Use"),
+        UserPeriod("17:00", "17:00", "Charge", max_charge_kw=3.6, target_soc_pct=80),
+        UserPeriod("17:00", "16:30", "Self Use"),
+    ]
+    error = validate_periods_rolling(periods, current_slot=_CS)
+    assert error is not None
+
+
+def test_rolling_validate_rejects_too_many_periods():
+    """More than 10 periods must be rejected (inverter limit)."""
+    # Build 11 one-hour periods starting at midnight (current_slot=0 for simplicity)
+    periods = [
+        UserPeriod(f"{h:02d}:00", f"{h+1:02d}:00", "Self Use")
+        for h in range(11)
+    ]
+    error = validate_periods_rolling(periods, current_slot=0)
+    assert error is not None
+    assert "10" in error
+
+
+def test_rolling_validate_battery_max_charge_kw(config):
+    """Battery-aware checks work the same as in validate_periods."""
+    periods = [UserPeriod("16:30", "16:30", "Charge",
+                          max_charge_kw=config.battery.max_charge_kw + 1.0,
+                          target_soc_pct=80)]
+    error = validate_periods_rolling(periods, current_slot=_CS, battery=config.battery)
+    assert error is not None
+    assert "exceeds" in error
+
+
+def test_rolling_validate_battery_target_soc_below_min(config):
+    below = config.battery.min_soc_pct - 1
+    periods = [UserPeriod("16:30", "16:30", "Charge",
+                          max_charge_kw=3.6, target_soc_pct=below)]
+    error = validate_periods_rolling(periods, current_slot=_CS, battery=config.battery)
+    assert error is not None
+    assert "minimum" in error
+
+
+# ---------------------------------------------------------------------------
+# simulate_rolling tests
+# ---------------------------------------------------------------------------
+
+def _make_rolling_forecast(
+    agile: float = 15.0,
+    export: float = 5.0,
+    solar: float = 0.0,
+    load: float = 0.3,
+    initial_soc_kwh: float = 5.0,
+):
+    """Rolling forecast: index 0 = current_slot, spans 48 rolling slots."""
+    from dataclasses import dataclass
+
+    @dataclass
+    class RollingForecast:
+        agile_prices: list
+        export_prices: list
+        solar_forecast: list
+        load_forecast: list
+        battery_soc_forecast: list
+
+    return RollingForecast(
+        agile_prices=_flat(agile),
+        export_prices=_flat(export),
+        solar_forecast=_flat(solar),
+        load_forecast=_flat(load),
+        battery_soc_forecast=[initial_soc_kwh] + [0.0] * (SLOTS - 1),
+    )
+
+
+def test_simulate_rolling_returns_48_slots(config):
+    periods = [UserPeriod("16:30", "16:30", "Self Use")]
+    forecast = _make_rolling_forecast()
+    result = simulate_rolling(periods, forecast, config.battery, current_slot=_CS)
+    assert len(result.battery_soc_forecast) == SLOTS
+    assert len(result.grid_import_forecast) == SLOTS
+    assert len(result.grid_export_forecast) == SLOTS
+    assert len(result.charge_mode_slots) == SLOTS
+
+
+def test_simulate_rolling_energy_balance(config):
+    """Energy balance must hold for every slot in the rolling result."""
+    periods = [UserPeriod("16:30", "16:30", "Self Use", min_soc_pct=10)]
+    forecast = _make_rolling_forecast(solar=0.2, load=0.3, initial_soc_kwh=10.0)
+    result = simulate_rolling(periods, forecast, config.battery, current_slot=_CS)
+
+    prev_soc = forecast.battery_soc_forecast[0]
+    for t in range(SLOTS):
+        delta = result.battery_soc_forecast[t] - prev_soc
+        charge = max(delta, 0.0)
+        discharge = max(-delta, 0.0)
+        lhs = result.grid_import_forecast[t] + forecast.solar_forecast[t] + discharge
+        rhs = forecast.load_forecast[t] + charge + result.grid_export_forecast[t]
+        assert abs(lhs - rhs) < 0.001, f"Energy balance failed at rolling slot {t}"
+        prev_soc = result.battery_soc_forecast[t]
+
+
+def test_simulate_rolling_charge_period_midnight_crossing(config):
+    """A Charge period that crosses midnight should charge in both halves of the window."""
+    # current_slot=33 (16:30); charge from 16:30→00:00, self-use 00:00→16:30
+    periods = [
+        UserPeriod("16:30", "00:00", "Charge", max_charge_kw=7.5, target_soc_pct=100),
+        UserPeriod("00:00", "16:30", "Self Use", min_soc_pct=10),
+    ]
+    capacity = config.battery.capacity_kwh
+    forecast = _make_rolling_forecast(solar=0.0, load=0.0, initial_soc_kwh=0.0)
+    result = simulate_rolling(periods, forecast, config.battery, current_slot=_CS)
+    # Rolling slot 14 = last slot before midnight (16:30+14×30min = 23:30)
+    # Battery should have charged during the 16:30→00:00 window
+    assert result.battery_soc_forecast[14] > 0.0
+    assert result.battery_soc_forecast[14] > capacity * 0.3
+
+
+def test_simulate_rolling_cost_covers_full_window(config):
+    """Cost should sum across all 48 rolling slots."""
+    periods = [UserPeriod("16:30", "16:30", "Self Use", min_soc_pct=10)]
+    agile_p = 20.0
+    export_p = 5.0
+    forecast = _make_rolling_forecast(agile=agile_p, export=export_p, solar=0.0,
+                                      load=0.3, initial_soc_kwh=10.0)
+    result = simulate_rolling(periods, forecast, config.battery, current_slot=_CS)
+    expected = sum(
+        result.grid_import_forecast[t] * agile_p - result.grid_export_forecast[t] * export_p
+        for t in range(SLOTS)
+    ) / 100
+    assert result.estimated_cost_gbp == pytest.approx(expected)
+
+
+def test_simulate_rolling_midnight_start_matches_simulate(config):
+    """With current_slot=0, simulate_rolling should produce the same result as simulate."""
+    periods = [UserPeriod("00:00", "24:00", "Self Use", min_soc_pct=10)]
+    forecast = _make_rolling_forecast(solar=0.0, load=0.3, initial_soc_kwh=5.0)
+    result_rolling = simulate_rolling(periods, forecast, config.battery, current_slot=0)
+    result_direct = simulate(periods, forecast, config.battery, start_slot=0)
+    assert result_rolling.battery_soc_forecast == pytest.approx(result_direct.battery_soc_forecast)
+    assert result_rolling.grid_import_forecast == pytest.approx(result_direct.grid_import_forecast)
+    assert result_rolling.estimated_cost_gbp == pytest.approx(result_direct.estimated_cost_gbp)

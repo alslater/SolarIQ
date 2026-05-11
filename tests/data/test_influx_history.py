@@ -12,13 +12,16 @@ def config(test_ini_path):
     return load_config(test_ini_path)
 
 
-def _make_solax_point(date_str, hour, minute, pvpower=0.0, power_in=0.0, power_out=0.0):
-    return {
+def _make_solax_point(date_str, hour, minute, pvpower=0.0, power_in=0.0, power_out=0.0, soc=None):
+    point = {
         "time": f"{date_str}T{hour:02d}:{minute:02d}:00Z",
         "pvpower": pvpower,
         "power_in": power_in,
         "power_out": power_out,
     }
+    if soc is not None:
+        point["soc"] = soc
+    return point
 
 
 def _make_rate_point(date_str, hour, minute, agile_rate=0.0, export_rate=0.0):
@@ -273,3 +276,106 @@ def test_predicted_solar_kwh_in_rows(config):
     total_forecast_solar = sum(r["predicted_solar_forecast_solar_kwh"] for r in rows)
     assert total_solcast == pytest.approx(1.25, abs=0.001)
     assert total_forecast_solar == pytest.approx(0.75, abs=0.001)
+
+
+def _empty_agile_mock():
+    m = MagicMock()
+    m.query.return_value.get_points.return_value = []
+    return m
+
+
+def _empty_forecast_mocks():
+    s = MagicMock()
+    s.query.return_value.get_points.return_value = []
+    f = MagicMock()
+    f.query.return_value.get_points.return_value = []
+    return s, f
+
+
+def test_soc_pct_present_in_all_rows(config):
+    """Every row must have a soc_pct key (value may be None)."""
+    solax_mock = MagicMock()
+    solax_mock.query.return_value.get_points.return_value = []
+    s, f = _empty_forecast_mocks()
+
+    with patch(
+        "solariq.data.influx.InfluxDBClient",
+        side_effect=[solax_mock, _empty_agile_mock(), s, f],
+    ):
+        rows = get_historical_range_data(config, start_date=date(2026, 4, 1), end_date=date(2026, 4, 3))
+
+    assert all("soc_pct" in r for r in rows)
+
+
+def test_soc_pct_none_when_no_soc_in_data(config):
+    """soc_pct is None for every row when the influx query returns no soc field."""
+    solax_points = [_make_solax_point("2026-04-01", 11, 0, pvpower=1.0)]  # no soc= kwarg
+    solax_mock = MagicMock()
+    solax_mock.query.return_value.get_points.return_value = solax_points
+    s, f = _empty_forecast_mocks()
+
+    with patch(
+        "solariq.data.influx.InfluxDBClient",
+        side_effect=[solax_mock, _empty_agile_mock(), s, f],
+    ):
+        rows = get_historical_range_data(config, start_date=date(2026, 4, 1), end_date=date(2026, 4, 1))
+
+    assert all(r["soc_pct"] is None for r in rows)
+
+
+def test_soc_pct_reflects_last_soc_value(config):
+    """soc_pct in the matching slot row equals the soc value from the influx point."""
+    # UTC 11:00 = BST 12:00 → slot 24 (index for 12:00 local)
+    solax_points = [_make_solax_point("2026-04-01", 11, 0, pvpower=0.0, soc=73.5)]
+    solax_mock = MagicMock()
+    solax_mock.query.return_value.get_points.return_value = solax_points
+    s, f = _empty_forecast_mocks()
+
+    with patch(
+        "solariq.data.influx.InfluxDBClient",
+        side_effect=[solax_mock, _empty_agile_mock(), s, f],
+    ):
+        rows = get_historical_range_data(config, start_date=date(2026, 4, 1), end_date=date(2026, 4, 1))
+
+    # Exactly one row should have soc_pct set; the rest are None
+    soc_rows = [r for r in rows if r["soc_pct"] is not None]
+    assert len(soc_rows) == 1
+    assert soc_rows[0]["soc_pct"] == pytest.approx(73.5, abs=0.05)
+
+
+def test_soc_pct_rounded_to_one_decimal(config):
+    """soc_pct is rounded to 1 decimal place."""
+    solax_points = [_make_solax_point("2026-04-01", 11, 0, soc=66.666)]
+    solax_mock = MagicMock()
+    solax_mock.query.return_value.get_points.return_value = solax_points
+    s, f = _empty_forecast_mocks()
+
+    with patch(
+        "solariq.data.influx.InfluxDBClient",
+        side_effect=[solax_mock, _empty_agile_mock(), s, f],
+    ):
+        rows = get_historical_range_data(config, start_date=date(2026, 4, 1), end_date=date(2026, 4, 1))
+
+    soc_rows = [r for r in rows if r["soc_pct"] is not None]
+    assert len(soc_rows) == 1
+    assert soc_rows[0]["soc_pct"] == round(66.666, 1)
+
+
+def test_soc_pct_multi_day_only_present_in_matching_slot(config):
+    """Over a multi-day query, soc_pct is None for all slots except the one with data."""
+    # One point on day 1 at UTC 11:00; days 2 and 3 have no solax data
+    solax_points = [_make_solax_point("2026-04-01", 11, 0, soc=50.0)]
+    solax_mock = MagicMock()
+    solax_mock.query.return_value.get_points.return_value = solax_points
+    s, f = _empty_forecast_mocks()
+
+    with patch(
+        "solariq.data.influx.InfluxDBClient",
+        side_effect=[solax_mock, _empty_agile_mock(), s, f],
+    ):
+        rows = get_historical_range_data(config, start_date=date(2026, 4, 1), end_date=date(2026, 4, 3))
+
+    soc_rows = [r for r in rows if r["soc_pct"] is not None]
+    # Only the BST-12:00 slot on day 1 should have soc_pct set
+    assert len(soc_rows) == 1
+    assert soc_rows[0]["soc_pct"] == pytest.approx(50.0, abs=0.05)

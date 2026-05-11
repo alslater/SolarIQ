@@ -1091,8 +1091,9 @@ class AppState(AuthState):
         if not self.evaluation_periods:
             return True
         last_end = self.evaluation_periods[-1].get("end_time", "")
-        # In Tomorrow mode only: block adding when the last period already ends at 24:00
-        # (In Today mode, 24:00 is the default placeholder end — user needs to be able to split it)
+        # Tomorrow mode: 24:00 means end-of-day, window is fully covered — block adding more.
+        # Today mode: window end is current_slot_time (e.g. "16:30"), not 24:00, so this
+        # check doesn't apply; the 10-period limit above is the only constraint.
         if not self.evaluation_today_mode and last_end == "24:00":
             return False
         # Also block if the last period has a time validation error
@@ -1268,6 +1269,9 @@ class AppState(AuthState):
             agile_tomorrow = await asyncio.to_thread(fetch_agile_prices, config, tomorrow)
             export_tomorrow = await asyncio.to_thread(fetch_export_prices, config, tomorrow)
         except Exception:
+            async with self:
+                self.evaluation_prefetch_agile_data = []
+                self.evaluation_tomorrow_rates_published = False
             return
 
         rates_published = _prices_published(agile_tomorrow)
@@ -1391,7 +1395,6 @@ class AppState(AuthState):
             predicted_usage_raw = [row.get("predicted_usage", 0.0) or 0.0 for row in chart_data]
             agile_prices_raw = [row.get("import", 0.0) or 0.0 for row in price_data_snap]
             export_prices_raw = [row.get("export", 0.0) or 0.0 for row in price_data_snap]
-            timestamps_raw = [row.get("time", f"{(i * 30) // 60:02d}:{(i * 30) % 60:02d}") for i, row in enumerate(chart_data)]
 
             # Load today's and tomorrow's data to build a rolling 48-slot window
             tz = ZoneInfo(config.app.timezone)
@@ -1400,12 +1403,16 @@ class AppState(AuthState):
             settings = get_forecast_settings(config.app.auth_db_path)
             test_mode = config.app.test_strategy_mode
 
-            # Agile/export: rolling window with test-mode fill for unpublished tomorrow slots
+            # Agile/export: rolling window with test-mode fill for unpublished tomorrow slots.
+            # In test mode we fetch today's rates to substitute for tomorrow's unpublished slots.
+            # In normal mode today's rates come from price_data_snap (already in memory) so we
+            # only need tomorrow's rates from the API.
             try:
-                agile_today_raw = await asyncio.to_thread(fetch_agile_prices, config, today_date)
-                export_today_raw = await asyncio.to_thread(fetch_export_prices, config, today_date)
                 agile_tomorrow_raw = await asyncio.to_thread(fetch_agile_prices, config, tomorrow_date)
                 export_tomorrow_raw = await asyncio.to_thread(fetch_export_prices, config, tomorrow_date)
+                if test_mode:
+                    agile_today_fetched = await asyncio.to_thread(fetch_agile_prices, config, today_date)
+                    export_today_fetched = await asyncio.to_thread(fetch_export_prices, config, today_date)
             except Exception as exc:
                 async with self:
                     self.evaluation_error = f"Could not fetch prices: {exc}"
@@ -1413,10 +1420,10 @@ class AppState(AuthState):
                 return
 
             if test_mode:
-                agile_tmrw_eff = fill_unpublished_slots(agile_today_raw)
-                export_tmrw_eff = fill_unpublished_slots(export_today_raw)
-                agile_today_eff = fill_unpublished_slots(agile_today_raw)
-                export_today_eff = fill_unpublished_slots(export_today_raw)
+                agile_tmrw_eff = fill_unpublished_slots(agile_today_fetched)
+                export_tmrw_eff = fill_unpublished_slots(export_today_fetched)
+                agile_today_eff = fill_unpublished_slots(agile_today_fetched)
+                export_today_eff = fill_unpublished_slots(export_today_fetched)
             else:
                 if not _prices_published(agile_tomorrow_raw):
                     async with self:
