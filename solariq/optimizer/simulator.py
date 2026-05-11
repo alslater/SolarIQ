@@ -11,6 +11,25 @@ def _time_to_slot(t: str) -> int:
     return h * 2 + m // 30
 
 
+def _rolling_time_to_slot(t: str, current_slot: int, as_end: bool = False) -> int:
+    """Convert "HH:MM" or "24:00" to a rolling slot index (0–48) relative to current_slot.
+
+    Times >= current_slot_time map to slots 0..(48 - current_slot).
+    Times < current_slot_time wrap to tomorrow: slots (48 - current_slot)..48.
+    "24:00" always maps to 48 (end of rolling window).
+    When as_end=True, current_slot_time maps to 48 (same time tomorrow) rather than 0.
+    """
+    if t == "24:00":
+        return 48
+    abs_slot = _time_to_slot(t)
+    if as_end and abs_slot == current_slot:
+        return 48
+    if abs_slot >= current_slot:
+        return abs_slot - current_slot
+    else:
+        return abs_slot + (48 - current_slot)
+
+
 def _slot_to_time(slot: int) -> str:
     """Convert slot index (0–48) to "HH:MM" or "24:00"."""
     if slot == 48:
@@ -111,6 +130,116 @@ def validate_periods(periods: list[UserPeriod], start_slot: int = 0, battery=Non
             return f"Periods overlap: {sorted_periods[i].end_time} and {sorted_periods[i + 1].start_time}."
 
     return None
+
+
+def validate_periods_rolling(periods: list[UserPeriod], current_slot: int, battery=None) -> str | None:
+    """Validate periods expressed in wall-clock HH:MM against a rolling window starting at current_slot.
+
+    Times >= current_slot_time map to today; times < current_slot_time wrap to tomorrow.
+    The window must be covered contiguously from current_slot_time to current_slot_time (+48 slots).
+    '24:00' is NOT valid here — the end of the rolling window is expressed as the same HH:MM as the
+    start (e.g. '17:00' if current_slot is slot 34). Use the sentinel end_time '24:00' internally
+    to mean 'end of rolling window'.
+    """
+    if not 0 <= current_slot < SLOTS:
+        return f"current_slot must be in 0..{SLOTS - 1} (got {current_slot})."
+
+    if not periods:
+        return "At least one period is required."
+
+    if len(periods) > 10:
+        return "Maximum 10 periods allowed (inverter limit)."
+
+    for p in periods:
+        if p.start_time == "24:00":
+            return "Use '00:00' for midnight as a period start, not '24:00'. Reserve '24:00' for the end of the last period only."
+        if not is_slot_boundary(p.start_time):
+            return f"Start time {p.start_time!r} must be on a 30-minute boundary (HH:00 or HH:30)."
+        if not is_slot_boundary(p.end_time):
+            return f"End time {p.end_time!r} must be on a 30-minute boundary (HH:00 or HH:30)."
+
+    # Mode and SOC checks (same as validate_periods)
+    valid_modes = {"Charge", "Self Use"}
+    for p in periods:
+        if p.mode not in valid_modes:
+            return f"Unknown period mode {p.mode!r}. Must be one of: {', '.join(sorted(valid_modes))}."
+    for p in periods:
+        if p.mode == "Charge":
+            if not (0 <= p.target_soc_pct <= 100):
+                return f"target_soc_pct must be 0–100 (got {p.target_soc_pct})."
+            if battery is not None and p.target_soc_pct < battery.min_soc_pct:
+                return (
+                    f"target_soc_pct ({p.target_soc_pct}%) is below the battery minimum "
+                    f"({battery.min_soc_pct}%)."
+                )
+            if p.max_charge_kw <= 0:
+                return f"max_charge_kw must be greater than 0 (got {p.max_charge_kw})."
+            if battery is not None and p.max_charge_kw > battery.max_charge_kw:
+                return (
+                    f"max_charge_kw ({p.max_charge_kw} kW) exceeds the battery maximum "
+                    f"({battery.max_charge_kw} kW)."
+                )
+        if p.mode == "Self Use" and not (0 <= p.min_soc_pct <= 100):
+            return f"min_soc_pct must be 0–100 (got {p.min_soc_pct})."
+
+    sorted_periods = sorted(periods, key=lambda p: _rolling_time_to_slot(p.start_time, current_slot))
+
+    current_time = _slot_to_time(current_slot)
+    if _rolling_time_to_slot(sorted_periods[0].start_time, current_slot) != 0:
+        return f"Periods must start at {current_time} to cover the full rolling window."
+    if _rolling_time_to_slot(sorted_periods[-1].end_time, current_slot, as_end=True) != 48:
+        return f"Periods must end at {current_time} (tomorrow) to cover the full rolling window."
+
+    for i in range(len(sorted_periods) - 1):
+        this_end = _rolling_time_to_slot(sorted_periods[i].end_time, current_slot, as_end=True)
+        next_start = _rolling_time_to_slot(sorted_periods[i + 1].start_time, current_slot)
+        if this_end < next_start:
+            return f"Gap between periods ending {sorted_periods[i].end_time} and starting {sorted_periods[i + 1].start_time}."
+        if this_end > next_start:
+            return f"Periods overlap: {sorted_periods[i].end_time} and {sorted_periods[i + 1].start_time}."
+
+    return None
+
+
+def simulate_rolling(periods: list[UserPeriod], forecast, battery, current_slot: int) -> EvaluationResult:
+    """Simulate a rolling 48-slot window starting at current_slot.
+
+    Periods use wall-clock HH:MM times. Times >= current_slot_time are today; times <
+    current_slot_time wrap to tomorrow. forecast arrays are already rolling-window ordered
+    (index 0 = current_slot, index 47 = current_slot - 1 tomorrow).
+    """
+    sorted_periods = sorted(periods, key=lambda p: _rolling_time_to_slot(p.start_time, current_slot))
+
+    # Build a per-slot period map in rolling slot space (0-47), then rewrite as
+    # midnight-based UserPeriods spanning slot 0..48 for the existing simulate().
+    slot_period: list[UserPeriod | None] = [None] * SLOTS
+    for p in sorted_periods:
+        start = _rolling_time_to_slot(p.start_time, current_slot)
+        end = _rolling_time_to_slot(p.end_time, current_slot, as_end=True)
+        for s in range(start, end):
+            slot_period[s] = p
+
+    # Collapse consecutive slots with the same period into merged UserPeriods
+    merged: list[UserPeriod] = []
+    s = 0
+    while s < SLOTS:
+        p = slot_period[s]
+        if p is None:
+            s += 1
+            continue
+        run_start = s
+        while s < SLOTS and slot_period[s] is p:
+            s += 1
+        merged.append(UserPeriod(
+            start_time=_slot_to_time(run_start),
+            end_time=_slot_to_time(s),
+            mode=p.mode,
+            target_soc_pct=p.target_soc_pct,
+            max_charge_kw=p.max_charge_kw,
+            min_soc_pct=p.min_soc_pct,
+        ))
+
+    return simulate(merged, forecast, battery, start_slot=0)
 
 
 def simulate(periods: list[UserPeriod], forecast, battery, start_slot: int = 0) -> EvaluationResult:

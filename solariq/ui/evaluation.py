@@ -308,8 +308,44 @@ def evaluation_tab() -> rx.Component:
         rx.cond(
             AppState.evaluation_today_mode,
             rx.text(
-                f"Evaluating from {AppState.evaluation_current_slot_time} (current slot)",
+                f"Rolling window: {AppState.evaluation_current_slot_time} now → {AppState.evaluation_current_slot_time} tomorrow. Use '00:00' for midnight within the window; '24:00' only as the end of the last period.",
                 style={"font_size": "12px", "color": t.MUTED, "margin_bottom": "8px"},
+            ),
+            rx.fragment(),
+        ),
+        # Rates not published yet warning
+        rx.cond(
+            AppState.evaluation_show_unpublished_warning,
+            rx.box(
+                rx.text(
+                    "⚠ Tomorrow's Agile prices aren't published yet — rates will appear after 16:15.",
+                    style={"font_size": "13px", "color": "#f59e0b"},
+                ),
+                style={
+                    **t.CARD_STYLE,
+                    "background": "#1a1200",
+                    "border_color": "#f59e0b",
+                    "padding": "12px 16px",
+                    "margin_bottom": "16px",
+                },
+            ),
+            rx.fragment(),
+        ),
+        # Test mode warning — shown when rates unpublished and test mode fills from today
+        rx.cond(
+            AppState.evaluation_show_test_mode_warning,
+            rx.box(
+                rx.text(
+                    "⚠ Test mode: tomorrow's rates not yet published — showing today's rates as substitute.",
+                    style={"font_size": "13px", "color": "#f59e0b"},
+                ),
+                style={
+                    **t.CARD_STYLE,
+                    "background": "#1a1200",
+                    "border_color": "#f59e0b",
+                    "padding": "12px 16px",
+                    "margin_bottom": "16px",
+                },
             ),
             rx.fragment(),
         ),
@@ -324,24 +360,6 @@ def evaluation_tab() -> rx.Component:
                     **t.CARD_STYLE,
                     "background": "#1a0a0a",
                     "border_color": t.FAIL,
-                    "padding": "12px 16px",
-                    "margin_top": "16px",
-                },
-            ),
-            rx.fragment(),
-        ),
-        # Test mode warning (only relevant in Tomorrow mode — Today from now always uses today's data)
-        rx.cond(
-            AppState.test_strategy_mode & ~AppState.evaluation_today_mode,
-            rx.box(
-                rx.text(
-                    "⚠ Test strategy mode is enabled — forecast data uses today's rates.",
-                    style={"font_size": "13px", "color": "#f59e0b"},
-                ),
-                style={
-                    **t.CARD_STYLE,
-                    "background": "#1a1200",
-                    "border_color": "#f59e0b",
                     "padding": "12px 16px",
                     "margin_top": "16px",
                 },

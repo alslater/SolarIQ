@@ -32,7 +32,7 @@ from solariq.data.load_profile import build_load_profile
 from solariq.data.octopus import UNPUBLISHED_RATE_CAP_P, fetch_agile_prices, fetch_export_prices, fetch_standing_charge_p_per_day, fetch_total_standing_charge_gbp, fill_unpublished_slots
 from solariq.data.solcast import fetch_solar_forecast
 from solariq.data.weather import fetch_today_weather
-from solariq.optimizer.simulator import simulate, validate_periods
+from solariq.optimizer.simulator import simulate, simulate_rolling, validate_periods, validate_periods_rolling
 from solariq.optimizer.solver import solve
 from solariq.optimizer.strategy import build_rolling_window, current_window_start
 from solariq.optimizer.types import UserPeriod
@@ -243,6 +243,8 @@ class AppState(AuthState):
     evaluation_price_data: list[dict] = []
     evaluation_solar_data: list[dict] = []
     evaluation_reference_price_data: list[dict] = []  # raw import/export rates for the pre-simulate chart
+    evaluation_prefetch_agile_data: list[dict] = []  # pre-evaluate chart data (tomorrow or rolling window)
+    evaluation_tomorrow_rates_published: bool = False
     evaluation_today_mode: bool = False
     evaluation_current_slot: int = 0
     evaluation_current_slot_time: str = ""
@@ -340,6 +342,7 @@ class AppState(AuthState):
             AppState.load_forecast_settings,
             AppState.load_cached_strategy,
             AppState.load_cached_calibration,
+            AppState.prefetch_evaluation_rates,
         ]
 
     @rx.var
@@ -1087,7 +1090,10 @@ class AppState(AuthState):
             return False
         if not self.evaluation_periods:
             return True
-        if self.evaluation_periods[-1].get("end_time") == "24:00":
+        last_end = self.evaluation_periods[-1].get("end_time", "")
+        # In Tomorrow mode only: block adding when the last period already ends at 24:00
+        # (In Today mode, 24:00 is the default placeholder end — user needs to be able to split it)
+        if not self.evaluation_today_mode and last_end == "24:00":
             return False
         # Also block if the last period has a time validation error
         idx = len(self.evaluation_periods) - 1
@@ -1100,19 +1106,22 @@ class AppState(AuthState):
     def evaluation_agile_chart_data(self) -> list[dict]:
         """Agile import and export prices for the reference chart above the schedule editor.
 
-        Populated from evaluation_reference_price_data (written by evaluate_schedule). In Today
-        mode, falls back to today_price_data (also midnight-based). Tomorrow mode has no fallback
-        because tomorrow_price_data uses rolling-window timestamps that don't align with the
-        midnight-based schedule editor times.
+        Post-evaluate: uses evaluation_reference_price_data.
+        Pre-evaluate: uses evaluation_prefetch_agile_data (populated by prefetch_evaluation_rates).
         """
         if self.evaluation_reference_price_data:
             return self.evaluation_reference_price_data
-        if self.evaluation_today_mode:
-            return [
-                {"time": row["time"], "import": row.get("import", 0.0), "export": row.get("export", 0.0)}
-                for row in self.today_price_data
-            ]
-        return []
+        return self.evaluation_prefetch_agile_data
+
+    @rx.var
+    def evaluation_show_unpublished_warning(self) -> bool:
+        """Show 'rates not published yet' warning when tomorrow's rates aren't available and test mode is off."""
+        return not self.evaluation_tomorrow_rates_published and not self.test_strategy_mode
+
+    @rx.var
+    def evaluation_show_test_mode_warning(self) -> bool:
+        """Show test mode warning when test mode is on and tomorrow's rates aren't published."""
+        return not self.evaluation_tomorrow_rates_published and self.test_strategy_mode
 
     @rx.var
     def filtered_strategy_periods(self) -> list[dict]:
@@ -1216,6 +1225,7 @@ class AppState(AuthState):
         self.evaluation_has_result = False
         self.evaluation_error = ""
         self.evaluation_reference_price_data = []
+        self.evaluation_prefetch_agile_data = []
         self.evaluation_period_errors = []
         if self.evaluation_today_mode:
             slot, _ = current_window_start(config.app.timezone)
@@ -1235,6 +1245,70 @@ class AppState(AuthState):
             self.evaluation_periods = []
             self.evaluation_current_slot = 0
             self.evaluation_current_slot_time = ""
+        return AppState.prefetch_evaluation_rates
+
+    @rx.event(background=True)
+    async def prefetch_evaluation_rates(self):
+        """Fetch agile/export rates for the pre-evaluate chart without running a simulation.
+
+        Tomorrow mode: midnight-based 48 slots for tomorrow.
+        Today from now mode: rolling 48-slot window from current slot through tomorrow.
+        In test mode when tomorrow's rates are unpublished, fills from today's rates.
+        """
+        config = _get_config()
+        tz = ZoneInfo(config.app.timezone)
+        today = datetime.now(tz).date()
+        tomorrow = _tomorrow(config)
+        today_mode = self.evaluation_today_mode
+        test_mode = config.app.test_strategy_mode
+
+        try:
+            agile_today = await asyncio.to_thread(fetch_agile_prices, config, today)
+            export_today = await asyncio.to_thread(fetch_export_prices, config, today)
+            agile_tomorrow = await asyncio.to_thread(fetch_agile_prices, config, tomorrow)
+            export_tomorrow = await asyncio.to_thread(fetch_export_prices, config, tomorrow)
+        except Exception:
+            return
+
+        rates_published = _prices_published(agile_tomorrow)
+
+        if test_mode:
+            agile_tmrw_eff = fill_unpublished_slots(agile_today)
+            export_tmrw_eff = fill_unpublished_slots(export_today)
+        else:
+            agile_tmrw_eff = agile_tomorrow
+            export_tmrw_eff = export_tomorrow
+
+        if today_mode:
+            current_slot = self.evaluation_current_slot
+            agile_today_eff = fill_unpublished_slots(agile_today) if test_mode else agile_today
+            export_today_eff = fill_unpublished_slots(export_today) if test_mode else export_today
+            rolling_agile = build_rolling_window(agile_today_eff, agile_tmrw_eff, current_slot)
+            rolling_export = build_rolling_window(export_today_eff, export_tmrw_eff, current_slot)
+            _, window_start = current_window_start(config.app.timezone)
+            timestamps = [
+                (window_start + timedelta(minutes=t * 30)).strftime("%H:%M")
+                for t in range(48)
+            ]
+            chart_data = [
+                {"time": timestamps[t], "import": rolling_agile[t], "export": rolling_export[t]}
+                for t in range(48)
+            ]
+        else:
+            midnight_slots = [f"{(t * 30) // 60:02d}:{(t * 30) % 60:02d}" for t in range(48)]
+            agile_48 = (list(agile_tmrw_eff) + [0.0] * 48)[:48]
+            export_48 = (list(export_tmrw_eff) + [0.0] * 48)[:48]
+            chart_data = [
+                {"time": midnight_slots[t], "import": agile_48[t], "export": export_48[t]}
+                for t in range(48)
+            ]
+
+        if not rates_published and not test_mode:
+            chart_data = []
+
+        async with self:
+            self.evaluation_prefetch_agile_data = chart_data
+            self.evaluation_tomorrow_rates_published = rates_published
 
     @rx.event(background=True)
     async def evaluate_schedule(self):
@@ -1267,7 +1341,10 @@ class AppState(AuthState):
                     max_charge_kw=max_charge_kw,
                     min_soc_pct=min_soc_pct,
                 ))
-            error = validate_periods(periods, start_slot=current_slot if today_mode else 0, battery=config.battery)
+            if today_mode:
+                error = validate_periods_rolling(periods, current_slot=current_slot, battery=config.battery)
+            else:
+                error = validate_periods(periods, start_slot=0, battery=config.battery)
         except Exception as exc:
             async with self:
                 self.evaluation_error = f"Invalid period input: {exc}"
@@ -1316,11 +1393,42 @@ class AppState(AuthState):
             export_prices_raw = [row.get("export", 0.0) or 0.0 for row in price_data_snap]
             timestamps_raw = [row.get("time", f"{(i * 30) // 60:02d}:{(i * 30) % 60:02d}") for i, row in enumerate(chart_data)]
 
-            # Load today's solar forecast from InfluxDB
+            # Load today's and tomorrow's data to build a rolling 48-slot window
             tz = ZoneInfo(config.app.timezone)
             today_date = datetime.now(tz).date()
+            tomorrow_date = _tomorrow(config)
             settings = get_forecast_settings(config.app.auth_db_path)
+            test_mode = config.app.test_strategy_mode
 
+            # Agile/export: rolling window with test-mode fill for unpublished tomorrow slots
+            try:
+                agile_today_raw = await asyncio.to_thread(fetch_agile_prices, config, today_date)
+                export_today_raw = await asyncio.to_thread(fetch_export_prices, config, today_date)
+                agile_tomorrow_raw = await asyncio.to_thread(fetch_agile_prices, config, tomorrow_date)
+                export_tomorrow_raw = await asyncio.to_thread(fetch_export_prices, config, tomorrow_date)
+            except Exception as exc:
+                async with self:
+                    self.evaluation_error = f"Could not fetch prices: {exc}"
+                    self.evaluation_loading = False
+                return
+
+            if test_mode:
+                agile_tmrw_eff = fill_unpublished_slots(agile_today_raw)
+                export_tmrw_eff = fill_unpublished_slots(export_today_raw)
+                agile_today_eff = fill_unpublished_slots(agile_today_raw)
+                export_today_eff = fill_unpublished_slots(export_today_raw)
+            else:
+                if not _prices_published(agile_tomorrow_raw):
+                    async with self:
+                        self.evaluation_error = "Tomorrow's Agile prices aren't published yet — try after 16:15."
+                        self.evaluation_loading = False
+                    return
+                agile_tmrw_eff = agile_tomorrow_raw
+                export_tmrw_eff = export_tomorrow_raw
+                agile_today_eff = agile_prices_raw
+                export_today_eff = export_prices_raw
+
+            # Solar forecast: stitch actuals to now, forecast from now; roll into tomorrow
             solar_forecast_today = None
             if settings.collect_solcast:
                 solar_forecast_today = await asyncio.to_thread(
@@ -1330,32 +1438,52 @@ class AppState(AuthState):
                 solar_forecast_today = await asyncio.to_thread(
                     load_solar_forecast_influx, config, today_date, source="forecast_solar"
                 )
-            if solar_forecast_today is None:
-                solar_forecast_today = []
+            solar_forecast_today = (list(solar_forecast_today or []) + [0.0] * 48)[:48]
 
-            # Normalise all source lists to exactly 48 entries before stitching
+            solar_forecast_tomorrow = None
+            if settings.collect_solcast:
+                solar_forecast_tomorrow = await asyncio.to_thread(
+                    load_solar_forecast_influx, config, tomorrow_date, source="solcast"
+                )
+            if solar_forecast_tomorrow is None and settings.collect_forecast_solar:
+                solar_forecast_tomorrow = await asyncio.to_thread(
+                    load_solar_forecast_influx, config, tomorrow_date, source="forecast_solar"
+                )
+            solar_forecast_tomorrow = (list(solar_forecast_tomorrow or []) + [0.0] * 48)[:48]
+
+            load_today = await asyncio.to_thread(build_load_profile, config, today_date)
+            load_tomorrow = await asyncio.to_thread(build_load_profile, config, tomorrow_date)
+
+            # Normalise today's actuals
             actual_solar = (actual_solar_raw + [0.0] * 48)[:48]
             actual_usage = (actual_usage_raw + [0.0] * 48)[:48]
             predicted_usage = (predicted_usage_raw + [0.0] * 48)[:48]
-            solar_forecast_today = (solar_forecast_today + [0.0] * 48)[:48]
-            agile_prices = (agile_prices_raw + [0.0] * 48)[:48]
-            export_prices = (export_prices_raw + [0.0] * 48)[:48]
-            timestamps = (timestamps_raw + [f"{(i * 30) // 60:02d}:{(i * 30) % 60:02d}" for i in range(48)])[:48]
 
-            # Stitch: actuals for past slots, forecast for future
-            solar_48 = actual_solar[:current_slot] + solar_forecast_today[current_slot:]
-            load_48 = actual_usage[:current_slot] + predicted_usage[current_slot:]
+            # Stitch today: actuals up to now, forecast from now
+            solar_today_stitched = actual_solar[:current_slot] + solar_forecast_today[current_slot:]
+            load_today_stitched = actual_usage[:current_slot] + predicted_usage[current_slot:]
 
-            # Battery SOC array: only index `current_slot` matters (used as initial SOC by simulate)
-            soc_48 = [0.0] * 48
-            soc_48[current_slot] = battery_soc_kwh
+            # Build rolling window arrays (current_slot → end of today + start of tomorrow)
+            agile_rolling = build_rolling_window(list(agile_today_eff), list(agile_tmrw_eff), current_slot)
+            export_rolling = build_rolling_window(list(export_today_eff), list(export_tmrw_eff), current_slot)
+            solar_rolling = build_rolling_window(solar_today_stitched, solar_forecast_tomorrow, current_slot)
+            load_rolling = build_rolling_window(load_today_stitched, list(load_tomorrow), current_slot)
+
+            # Battery SOC: index 0 = now (rolling slot 0)
+            soc_rolling = [battery_soc_kwh] + [0.0] * 47
+
+            _, window_start = current_window_start(config.app.timezone)
+            timestamps = [
+                (window_start + timedelta(minutes=t * 30)).strftime("%H:%M")
+                for t in range(48)
+            ]
 
             forecast = _TodayForecast(
-                agile_prices=agile_prices,
-                export_prices=export_prices,
-                solar_forecast=solar_48,
-                load_forecast=load_48,
-                battery_soc_forecast=soc_48,
+                agile_prices=agile_rolling,
+                export_prices=export_rolling,
+                solar_forecast=solar_rolling,
+                load_forecast=load_rolling,
+                battery_soc_forecast=soc_rolling,
             )
         else:
             # Build a midnight-based forecast for tomorrow's calendar day.
@@ -1390,7 +1518,7 @@ class AppState(AuthState):
 
             if not test_mode and not _prices_published(agile_tmrw):
                 async with self:
-                    self.evaluation_error = "Tomorrow's Agile prices aren't published yet — try after 16:00."
+                    self.evaluation_error = "Tomorrow's Agile prices aren't published yet — try after 16:15."
                     self.evaluation_loading = False
                 return
 
@@ -1436,10 +1564,14 @@ class AppState(AuthState):
             ]
 
         try:
-            result = await asyncio.to_thread(
-                simulate, periods, forecast, config.battery,
-                current_slot if today_mode else 0
-            )
+            if today_mode:
+                result = await asyncio.to_thread(
+                    simulate_rolling, periods, forecast, config.battery, current_slot
+                )
+            else:
+                result = await asyncio.to_thread(
+                    simulate, periods, forecast, config.battery, 0
+                )
         except Exception as exc:
             async with self:
                 self.evaluation_error = str(exc)
@@ -1508,7 +1640,7 @@ class AppState(AuthState):
             async with self:
                 self.strategy_loading = False
             yield rx.toast.warning(
-                "Tomorrow's Agile prices aren't available yet — try after 16:00.",
+                "Tomorrow's Agile prices aren't available yet — try after 16:15.",
                 duration=6000,
                 close_button=True,
             )

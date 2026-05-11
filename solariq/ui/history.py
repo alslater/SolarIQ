@@ -152,7 +152,7 @@ def history_tab() -> rx.Component:
                 # Solar, grid import & export chart
                 rx.box(
                     _section_heading("Solar, Grid Import & Export (kWh)"),
-                    rx.recharts.bar_chart(
+                    rx.recharts.composed_chart(
                         rx.recharts.cartesian_grid(stroke_dasharray="3 3", stroke=t.CHART_GRID),
                         rx.recharts.bar(
                             data_key="solar_kwh",
@@ -175,12 +175,21 @@ def history_tab() -> rx.Component:
                             fill_opacity=0.7,
                             radius=[2, 2, 0, 0],
                         ),
+                        rx.recharts.line(
+                            data_key="soc_pct",
+                            name="Battery SOC %",
+                            stroke="#a78bfa",
+                            stroke_width=2,
+                            dot=False,
+                            y_axis_id="right",
+                        ),
                         rx.recharts.x_axis(
                             data_key="date",
                             tick={"fill": t.CHART_MUTED, "fontSize": 10},
                             interval="preserveStartEnd",
                         ),
                         rx.recharts.y_axis(tick={"fill": t.CHART_MUTED, "fontSize": 10}),
+                        rx.recharts.y_axis(y_axis_id="right", orientation="right", tick={"fill": t.CHART_MUTED, "fontSize": 10}, domain=[0, 100]),
                         rx.recharts.legend(),
                         rx.recharts.tooltip(),
                         data=AppState.history_chart_data,
@@ -251,6 +260,7 @@ def history_tab() -> rx.Component:
                             interval="preserveStartEnd",
                         ),
                         rx.recharts.y_axis(tick={"fill": t.CHART_MUTED, "fontSize": 10}),
+                        rx.recharts.y_axis(y_axis_id="right", orientation="right", tick={"fill": t.CHART_MUTED, "fontSize": 10}),
                         rx.recharts.legend(),
                         rx.recharts.tooltip(),
                         data=AppState.history_chart_data,
@@ -263,7 +273,7 @@ def history_tab() -> rx.Component:
                 # Grid cost vs export revenue chart
                 rx.box(
                     _section_heading("Grid Cost vs Export Revenue (£)"),
-                    rx.recharts.bar_chart(
+                    rx.recharts.composed_chart(
                         rx.recharts.cartesian_grid(stroke_dasharray="3 3", stroke=t.CHART_GRID),
                         rx.recharts.bar(
                             data_key="grid_cost_gbp",
@@ -283,6 +293,7 @@ def history_tab() -> rx.Component:
                             interval="preserveStartEnd",
                         ),
                         rx.recharts.y_axis(tick={"fill": t.CHART_MUTED, "fontSize": 10}),
+                        rx.recharts.y_axis(y_axis_id="right", orientation="right", tick={"fill": t.CHART_MUTED, "fontSize": 10}),
                         rx.recharts.legend(),
                         rx.recharts.tooltip(),
                         data=AppState.history_chart_data,

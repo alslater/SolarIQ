@@ -309,7 +309,8 @@ def get_historical_range_data(
     )
     result = client.query(
         f"SELECT MEAN(pvpower) AS pvpower, MEAN(power_in) AS power_in, "
-        f"MEAN(power_out) AS power_out, MEAN(battery_power) AS battery_power "
+        f"MEAN(power_out) AS power_out, MEAN(battery_power) AS battery_power, "
+        f"LAST(soc) AS soc "
         f"FROM solaxdata "
         f"WHERE time >= '{from_utc}' AND time <= '{to_utc}' "
         f"GROUP BY time({SLOT_MINUTES}m) fill(none)"
@@ -318,6 +319,7 @@ def get_historical_range_data(
     # Aggregate slot-sized buckets; also accumulate raw slot data for cost calculation
     # Bucket key: (date, slot) for 30-minute buckets, (date,) for daily
     energy_buckets: dict[tuple, dict] = {}
+    soc_buckets: dict[tuple, float] = {}
     # slot_entries: list of (date, slot_index, import_kwh, export_kwh) for cost join
     slot_entries: list[tuple] = []
 
@@ -340,6 +342,9 @@ def get_historical_range_data(
         energy_buckets[key]["solar_kwh"] += solar_kwh
         energy_buckets[key]["grid_import_kwh"] += import_kwh
         energy_buckets[key]["grid_export_kwh"] += export_kwh
+        soc = point.get("soc")
+        if soc is not None:
+            soc_buckets[key] = float(soc)
         slot_entries.append((d, slot, import_kwh, export_kwh, solar_kwh, battery_power_kw))
 
     # Fetch agile import and export rates from energy.electricity
@@ -459,6 +464,7 @@ def get_historical_range_data(
                     "grid_export_revenue_gbp": round(revenue_buckets.get(key, 0.0) / 100, prec),
                     "solar_saving_gbp": round(solar_saving_buckets.get(key, 0.0) / 100, prec),
                     "battery_peak_saving_gbp": round(battery_peak_saving_buckets.get(key, 0.0) / 100, prec),
+                    "soc_pct": round(soc_buckets[key], 1) if key in soc_buckets else None,
                     "avg_import_rate_p": round(
                         import_rate_sum_buckets[key] / import_rate_count_buckets[key], prec
                     ) if import_rate_count_buckets.get(key, 0) > 0 else None,
@@ -488,6 +494,7 @@ def get_historical_range_data(
                 "grid_export_revenue_gbp": round(revenue_buckets.get(key, 0.0) / 100, prec),
                 "solar_saving_gbp": round(solar_saving_buckets.get(key, 0.0) / 100, prec),
                 "battery_peak_saving_gbp": round(battery_peak_saving_buckets.get(key, 0.0) / 100, prec),
+                "soc_pct": round(soc_buckets[key], 1) if key in soc_buckets else None,
                 "avg_import_rate_p": round(
                     import_rate_sum_buckets[key] / import_rate_count_buckets[key], prec
                 ) if import_rate_count_buckets.get(key, 0) > 0 else None,
