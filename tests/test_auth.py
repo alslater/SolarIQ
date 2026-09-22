@@ -93,13 +93,14 @@ def test_session_token_is_hashed_at_rest(tmp_path):
     assert row[0] != token
 
 
-def test_legacy_plaintext_session_token_is_migrated_on_read(tmp_path):
+def test_legacy_plaintext_session_token_is_migrated_on_read(tmp_path, monkeypatch):
     db_path = _db_path(tmp_path)
     init_auth_db(db_path)
     user = create_user(db_path, "alice", "strong-pass-1")
 
     legacy_token = "legacy-plaintext-token"
     now = datetime(2026, 5, 4, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(auth_module, "_utcnow", lambda: now)
     expires_at = (now + timedelta(days=30)).isoformat()
 
     with sqlite3.connect(db_path) as conn:
